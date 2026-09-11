@@ -4,10 +4,13 @@ import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
 
 /**
- * 九九乘法表工具（第四层·starter calc tool，bootstrap 工具路径）。
+ * 九九乘法表工具（第四层·starter calc tool，LC4j {@link dev.langchain4j.agent.tool.Tool}）。
  *
- * <p>打印 1x1 至 9x9 的下三角乘法表（每行 i 个式子，空格分隔，行间换行）。
- * 无参数：由 {@link MultiplicationTableDetector} 命中"乘法表/九九乘法/99乘法"即触发。
+ * <p>打印 1x1 至 9x9 的下三角乘法表（每行 i 个式子，空格分隔，行间换行）。无参数：
+ * LC4j function-calling 模型出无参 {@code tool_calls} → {@link dev.langchain4j.service.tool.DefaultToolExecutor}
+ * 反射调本方法（plumbing 详见 {@link ToolCallExecutorTest}）。
+ *
+ * <p>退役映射：旧 {@code MultiplicationTableDetector} 关键词检测已退役——LC4j 原生取 schema/反射。
  */
 @Component
 public class MultiplicationTool {

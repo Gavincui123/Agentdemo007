@@ -9,15 +9,17 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 /**
- * 三角形面积工具（第四层·starter calc tool，bootstrap 工具路径）。
+ * 三角形面积工具（第四层·starter calc tool，LC4j {@link dev.langchain4j.agent.tool.Tool}）。
  *
- * <p>面积 = 底 × 高 ÷ 2（BigDecimal 高精度，与 {@link ArithmeticTool} 同精度范式）。
- * 由 {@link TriangleAreaDetector} 从用户输入判定触发并抽取 底/高，经 {@link SchemaValidator}
- * 校验后由 {@link ToolExecutor} 执行。参数非法（负值）抛 {@link ToolRecoverableException}
- * 走自纠正/耗尽短路（{@code TOOL_FAILURE}）。
+ * <p>面积 = 底 × 高 ÷ 2（BigDecimal 高精度）。LC4j function-calling：模型出 {@code tool_calls}
+ * （base/height 参数）→ {@link dev.langchain4j.service.tool.DefaultToolExecutor} 反射调本方法
+ * （plumbing 详见 {@link ToolCallExecutorTest}）。参数非法（负值）抛 {@link ToolRecoverableException}
+ * （DefaultToolExecutor 原生吞 @Tool 异常→消息当结果返回，不透传 ToolExecutionStep，
+ * [[langchain4j-boot4-compat-findings]]：自纠正开箱即用）。
  *
- * <p>详见 [[routeplan-design]] 缺口实现优先级①：starter calc tools 先做，后续真业务工具
- * （订单/物流/库存/价格）接上即用。
+ * <p>退役映射：旧 {@code TriangleAreaDetector} 关键词检测 + {@code SchemaValidator} 校验 +
+ * 手撸 {@code ToolExecutor} 执行已退役——LC4j 原生取 schema/参数强转/反射（无关键词检测/手校验）。
+ * 详见 [[routeplan-design]] 缺口实现优先级①：starter calc tools 先做，后续真业务工具接上即用。
  */
 @Component
 public class TriangleAreaTool {
