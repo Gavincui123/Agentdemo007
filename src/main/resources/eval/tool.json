@@ -1,0 +1,12 @@
+{
+  "stage": "tool",
+  "description": "Phase 9 工具调用测评数据：验证参数解析→Schema校验→执行链路与自纠正/耗尽短路。expected 取 toolResult（成功文本）或 scenario（TOOL_FAILURE 短路）。",
+  "cases": [
+    { "id": "tool-001", "input": "计算 1+2*3", "expected": { "toolResult": "7" }, "note": "前缀剥离+四则运算，结果 7" },
+    { "id": "tool-002", "input": "算一下 sum(1..100)", "expected": { "toolResult": "5050" }, "note": "区间求和 = 5050" },
+    { "id": "tool-003", "input": "计算 (1+2)*4", "expected": { "toolResult": "12" }, "note": "括号优先 = 12" },
+    { "id": "tool-004", "input": "10/3", "expected": { "toolResult": "3.3333333333" }, "note": "BigDecimal 10 位小数 HALF_UP" },
+    { "id": "tool-005", "input": "1/0", "expected": { "scenario": "TOOL_FAILURE", "outcome": "SHORT_CIRCUIT", "degraded": true }, "note": "除零→ToolRecoverableException→无 LLM 自纠正耗尽→话术短路（deg-009）" },
+    { "id": "tool-006", "input": "你好", "expected": { "outcome": "PROCEED", "toolResult": null }, "note": "非算术输入→不触发工具，正常对话" }
+  ]
+}

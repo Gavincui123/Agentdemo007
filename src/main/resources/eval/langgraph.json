@@ -1,0 +1,14 @@
+{
+  "stage": "langgraph",
+  "description": "Phase 14 LangGraph 集成测评数据：验证图编排适配（GraphNode 复用 step.process + per-step 审计）、分支路由（proceed/degrade/shortCircuit/retry→自循环）、Retry 循环与 maxIterations 护栏、编排模式切换（linear/graph 互斥）与线性-图终态一致性。expected.outcome 取值 OK/SHORT_CIRCUIT/DEGRADED/INTERNAL；expected.branch 取值 proceed/degrade/shortCircuit/retry；expected.wiredExecutor 取值 PipelineOrchestrator/GraphExecutor。",
+  "cases": [
+    { "id": "lg-001", "input": "多节点全 Proceed（A→B 串联追加）", "expected": { "outcome": "OK", "branch": "proceed", "degraded": false, "scenario": null, "consistentWithLinear": true }, "note": "GraphNode 逐节点复用 step.process，Proceed 边→下一节点；终态 terminal ok，与线性编排逐字段相等" },
+    { "id": "lg-002", "input": "中途节点返回 ShortCircuit(SESSION_DOWN)", "expected": { "outcome": "SHORT_CIRCUIT", "branch": "shortCircuit", "degraded": true, "scenario": "SESSION_DOWN", "zeroLlm": true, "skipsSubsequent": true }, "note": "shortCircuit 边→END，取话术短路，跳过后续节点（①话术短路）；审计记 短路:step:SESSION_DOWN" },
+    { "id": "lg-003", "input": "中途节点返回 Degrade(RAG_SKIP)，后续 Proceed", "expected": { "outcome": "DEGRADED", "branch": "degrade", "degraded": true, "scenario": "RAG_SKIP", "continuesToNext": true, "consistentWithLinear": true }, "note": "degrade 边→下一节点（不短路），per-step markDegraded 累积；终态 terminal degraded（②每步降级）" },
+    { "id": "lg-004", "input": "节点 process 抛 RuntimeException", "expected": { "outcome": "SHORT_CIRCUIT", "branch": "shortCircuit", "degraded": true, "scenario": "INTERNAL", "caughtAtNode": true }, "note": "GraphNode 捕获异常→StepOutcomeAuditor.auditException + 发 ShortCircuit(INTERNAL)→END 取 INTERNAL 话术（不抛 5xx，全局兜底）" },
+    { "id": "lg-005", "input": "节点先返回 Retry，第 2 次成功（迭代内）", "expected": { "outcome": "OK", "branch": "retry", "selfLoops": true, "recovered": true, "withinMaxIterations": true, "linearEquivalent": "PROCEED" }, "note": "retry 边→本节点自循环再执行；成功后 Proceed→下一节点。线性模式下 Retry 等价 Proceed 直接推进（§5.13）" },
+    { "id": "lg-006", "input": "节点恒返回 Retry，触及 maxIterations=25", "expected": { "outcome": "SHORT_CIRCUIT", "degraded": true, "scenario": "INTERNAL", "maxIterationsExceeded": true, "guardrail": true }, "note": "langgraph4j 超迭代抛 CompletionException→GraphExecutor 捕获→INTERNAL 话术（§5.13 死循环护栏兜底）" },
+    { "id": "lg-007", "input": "app.pipeline.mode=graph 启动；mode=linear/缺省启动", "expected": { "wiredExecutor": "GraphExecutor|PipelineOrchestrator", "mutualExclusion": true, "callerAgnostic": true }, "note": "LangGraphConfig(mode=graph) 与 PipelineOrchestrator(mode=linear/matchIfMissing) 互斥装配；ChatController 只依赖 PipelineExecutor 接口（换引擎不换出口，④统一收口）" },
+    { "id": "lg-008", "input": "同一份 steps 经线性 / 图编排分别驱动", "expected": { "consistentWithLinear": true, "fieldsEqual": ["reply", "degraded", "scenario"] }, "note": "GraphExecutor.terminal 镜像 PipelineOrchestrator.terminal；StepOutcomeAuditor 两模式复用同一审计逻辑——终态 PipelineResult 逐字段一致（回归守卫：OrchestratorGraphConsistencyTest）" }
+  ]
+}

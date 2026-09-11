@@ -1,0 +1,44 @@
+{
+  "stage": "routing",
+  "note": "第三层·模型路由分发黄金测评数据（§5.13）。覆盖：意图→四类路由（SIMPLE/REASONING/LONG_CONTEXT/STRUCTURED）、有路由规则用规则目标、无规则按标签经选择策略选模型、无可用模型→MODEL_DOWN话术短路。由 Phase 15 EvalExecutor 统一加载执行。",
+  "cases": [
+    {
+      "id": "rte-001",
+      "input": "你好呀",
+      "expected": { "intent": "CHIT_CHAT", "route": "SIMPLE" },
+      "note": "闲聊→简单模型路由（低成本快模型）。"
+    },
+    {
+      "id": "rte-002",
+      "input": "分析 Q3 销售环比",
+      "expected": { "intent": "REASONING", "route": "REASONING" },
+      "note": "推理→推理模型路由（高能力模型）。"
+    },
+    {
+      "id": "rte-003",
+      "input": "总结这份长文档",
+      "expected": { "intent": "LONG_CONTEXT", "route": "LONG_CONTEXT" },
+      "note": "长上下文→长上下文模型路由（大窗口模型）。"
+    },
+    {
+      "id": "rte-004",
+      "input": "抽取字段为结构化 JSON",
+      "expected": { "intent": "STRUCTURED_EXTRACTION", "route": "STRUCTURED" },
+      "note": "结构化抽取→结构化模型路由（强结构化输出模型）。"
+    },
+    {
+      "id": "rte-005",
+      "input": "你好",
+      "context": { "ruleWithTarget": "m-simple-cheap" },
+      "expected": { "selectedModel": "m-simple-cheap" },
+      "note": "有路由规则且规则有 targetModelId→直接用规则目标模型。"
+    },
+    {
+      "id": "rte-006",
+      "input": "你好",
+      "context": { "noCandidates": true },
+      "expected": { "scenario": "MODEL_DOWN", "shortCircuit": true },
+      "note": "无可用模型→话术(MODEL_DOWN)+短路（§5.12 模型路由行）。"
+    }
+  ]
+}

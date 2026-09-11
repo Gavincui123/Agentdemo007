@@ -1,0 +1,45 @@
+# =============================================================================
+# Agentdemo007 — 生产环境配置
+# 密钥全部经环境变量注入，配置文件仅 ${} 占位，不落明文。
+# =============================================================================
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.agentdemo007: INFO
+    com.agentdemo007.intent: INFO
+  file:
+    path: /var/log/agentdemo007
+
+# 生产环境强制启用 Nacos 热更新
+nacos:
+  refresh-enabled: true
+  config-timeout-ms: 10000
+
+# 生产环境密钥必须通过环境变量提供，缺省为空（启动校验拒绝明文）
+# redis.password: ${REDIS_PASSWORD:}
+# llm.api-key: ${LLM_API_KEY:}
+# datasource.password: ${DS_PASSWORD:}
+
+# Phase 13 生产 JPA：MySQL（DS_URL 经环境变量注入），ddl-auto=none 由迁移工具管理表结构
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+  # prod ddl-auto=none，由 classpath:schema.sql 建表（IF NOT EXISTS 幂等，每次启动安全执行）
+  sql:
+    init:
+      mode: always
+  # 生产启用 RabbitMQ（RABBITMQ_ENABLED=true）：消费者 + 真实 publisher + DLQ 装配
+  rabbitmq:
+    listener:
+      simple:
+        acknowledge-mode: manual
+
+# 生产强制启用异步持久化与审计（会话落库 + 事件审计）
+app:
+  rabbitmq:
+    enabled: true

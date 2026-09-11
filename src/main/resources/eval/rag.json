@@ -1,0 +1,13 @@
+{
+  "stage": "rag",
+  "description": "Phase 10 RAG 测评数据：验证向量化→召回→校验→重排→注入扫描链路。expected 取 outcome(PROCEED/DEGRADE)+scenario(NONE/RAG_SKIP)+hasFragments。基于 RagSeedRunner 种子语料（退款流程/退货政策/物流查询/会员等级）；dev 哈希嵌入为词袋口径，查询需与片段词面重叠方可召回，prod 真实 Embedding 覆盖语义召回。",
+  "cases": [
+    { "id": "rag-001", "input": "退款流程", "expected": { "outcome": "PROCEED", "scenario": "NONE", "hasFragments": true }, "note": "召回命中退款流程片段，经重排+注入扫描纯净入上下文" },
+    { "id": "rag-002", "input": "今天天气怎么样", "expected": { "outcome": "DEGRADE", "scenario": "RAG_SKIP", "hasFragments": false, "degraded": true }, "note": "无词面重叠→空召回→跳过 RAG 继续（§5.12 RAG 行、deg-004）" },
+    { "id": "rag-003", "input": "物流查询", "expected": { "outcome": "PROCEED", "scenario": "NONE", "hasFragments": true }, "note": "召回命中物流查询片段" },
+    { "id": "rag-004", "input": "会员等级", "expected": { "outcome": "PROCEED", "scenario": "NONE", "hasFragments": true }, "note": "召回命中会员等级片段，余弦 ~0.4 过 0.3 阈值" },
+    { "id": "rag-005", "input": "", "expected": { "outcome": "DEGRADE", "scenario": "RAG_SKIP", "hasFragments": false, "degraded": true }, "note": "空查询→不向量化→跳过 RAG（VectorRetriever 空守卫）" },
+    { "id": "rag-006", "input": "查订单 ORD123456", "expected": { "hasFragments": true, "ragFragmentsContain": "ORD123456" }, "note": "Phase 20 Hybrid RAG：查询含精确词（订单号）→ 关键词通道精确命中 kb-order 片段（向量余弦或可漂移，精确词子串命中兜底）入上下文。" },
+    { "id": "rag-007", "input": "旧退款政策", "expected": { "ragFragmentsContain": "历史参考资料" }, "note": "Phase 20 时效治理：召回历史片段（temporalTag=HISTORICAL）→ displayText 隔离标注『历史参考资料·截至2024-06-30』，过时不冒充当前。" }
+  ]
+}

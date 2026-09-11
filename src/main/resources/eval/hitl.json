@@ -1,0 +1,11 @@
+{
+  "stage": "hitl",
+  "description": "Phase 11 HITL 测评数据：验证高风险触发→建工单→超时/权限判定→HITL_TIMEOUT 话术短路链路。expected 取 outcome(PROCEED/SHORT_CIRCUIT)+scenario(HITL_TIMEOUT)+ticketCreated。触发=意图转人工 或 命中高风险关键词（投诉/转人工/紧急/报警/举报）；非触发→Proceed 不建工单。",
+  "cases": [
+    { "id": "hitl-001", "input": "帮我转人工", "expected": { "outcome": "SHORT_CIRCUIT", "scenario": "HITL_TIMEOUT", "ticketCreated": true }, "note": "转人工意图→建 PENDING 工单+话术短路（零 LLM）" },
+    { "id": "hitl-002", "input": "我要投诉这个订单", "expected": { "outcome": "SHORT_CIRCUIT", "scenario": "HITL_TIMEOUT", "ticketCreated": true }, "note": "高风险关键词命中→建工单+话术短路" },
+    { "id": "hitl-003", "input": "查一下我的订单", "expected": { "outcome": "PROCEED", "scenario": "NONE", "ticketCreated": false }, "note": "非高风险查询→Proceed，不建工单" },
+    { "id": "hitl-004", "input": "转人工（超时未确认场景）", "expected": { "outcome": "SHORT_CIRCUIT", "scenario": "HITL_TIMEOUT", "ticketCreated": true, "ticketStatus": "TIMEOUT" }, "note": "超时未确认→工单标 TIMEOUT+话术短路" },
+    { "id": "hitl-005", "input": "转人工（权限不足场景）", "expected": { "outcome": "SHORT_CIRCUIT", "scenario": "HITL_TIMEOUT", "ticketCreated": true, "ticketStatus": "PENDING" }, "note": "权限不足→工单挂起 PENDING+话术短路" }
+  ]
+}

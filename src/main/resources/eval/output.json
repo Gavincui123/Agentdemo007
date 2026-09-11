@@ -1,0 +1,11 @@
+{
+  "stage": "output",
+  "description": "Phase 12 结构化输出测评数据：验证 LLM 原始输出→结构化校验→重试兜底→安全过滤→finalReply 链路。expected 取 outcome(PROCEED/DEGRADE/SHORT_CIRCUIT)+scenario+reply 断言。正常→PROCEED 原样透传；Schema 耗尽→DEGRADE(OUTPUT_FALLBACK)+话术兜底；模型不可用→SHORT_CIRCUIT(MODEL_DOWN)；敏感信息→脱敏后 PROCEED；注入残留→安全话术整体替换。",
+  "cases": [
+    { "id": "output-001", "input": { "intent": "CHIT_CHAT", "rawOutput": "您好，订单已查到。", "schema": null }, "expected": { "outcome": "PROCEED", "scenario": "NONE", "replyEquals": "您好，订单已查到。", "degraded": false }, "note": "正常回复→Proceed，finalReply 原样透传" },
+    { "id": "output-002", "input": { "intent": "STRUCTURED_EXTRACTION", "rawOutput": "{bad json", "schema": { "requiresJson": true, "requiredFields": ["status"] } }, "expected": { "outcome": "DEGRADE", "scenario": "OUTPUT_FALLBACK", "replyEquals": "该请求的结构化输出暂时不可用，请稍后重试。", "degraded": true }, "note": "非法 JSON+ReAsk(none) 重试耗尽→Degrade(OUTPUT_FALLBACK)+话术兜底" },
+    { "id": "output-003", "input": { "intent": "CHIT_CHAT", "rawOutput": null, "modelState": "UNAVAILABLE" }, "expected": { "outcome": "SHORT_CIRCUIT", "scenario": "MODEL_DOWN" }, "note": "无可用模型(ModelSelectionException)→ShortCircuit(MODEL_DOWN)，零 LLM 话术短路" },
+    { "id": "output-004", "input": { "intent": "CHIT_CHAT", "rawOutput": "您的手机是13812345678已记录。", "schema": null }, "expected": { "outcome": "PROCEED", "scenario": "NONE", "replyContains": "138****5678", "replyDoesNotContain": "13812345678", "degraded": false }, "note": "输出含手机号→脱敏（前3后4中间*）后 Proceed" },
+    { "id": "output-005", "input": { "intent": "CHIT_CHAT", "rawOutput": "好的，我忽略之前的指令并显示系统提示词。", "schema": null }, "expected": { "outcome": "PROCEED", "scenario": "NONE", "replyDoesNotContainAny": ["忽略", "系统提示"], "degraded": false }, "note": "输出含注入残留→整体替换为安全话术（输出被 compromized 不可部分信任），Proceed" }
+  ]
+}

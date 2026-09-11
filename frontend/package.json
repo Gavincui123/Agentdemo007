@@ -1,0 +1,36 @@
+{
+  "name": "agentdemo007-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "vue-tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.7.9",
+    "echarts": "^5.6.0",
+    "element-plus": "^2.9.1",
+    "markdown-it": "^14.1.1",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.41",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^24.13.3",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/test-utils": "^2.4.6",
+    "@vue/tsconfig": "^0.9.1",
+    "jsdom": "^25.0.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^3.0.0",
+    "vue-tsc": "^3.3.11"
+  }
+}

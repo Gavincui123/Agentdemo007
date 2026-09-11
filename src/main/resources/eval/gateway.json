@@ -1,0 +1,11 @@
+{
+  "stage": "gateway",
+  "description": "Phase 4 统一模型网关测评数据：验证预算关卡（零 LLM 短路）、故障转移、容灾耗尽收口行为。",
+  "cases": [
+    { "id": "gw-001", "input": "主模型正常可用", "expected": { "outcome": "PROCEED", "modelId": "primary", "degraded": false }, "note": "网关透传主模型响应" },
+    { "id": "gw-002", "input": "主模型超时，备选可用", "expected": { "outcome": "PROCEED", "modelId": "fallback", "degraded": false, "failover": true }, "note": "故障转移成功，请求最终成功" },
+    { "id": "gw-003", "input": "主备模型均不可用", "expected": { "scenario": "FAILOVER_EXHAUSTED", "outcome": "SHORT_CIRCUIT", "degraded": true }, "note": "容灾耗尽→话术短路，不抛 5xx" },
+    { "id": "gw-004", "input": "请求速率超限（>maxRequestsPerSecond）", "expected": { "scenario": "RATE_LIMITED", "outcome": "SHORT_CIRCUIT", "degraded": true, "zeroLlm": true }, "note": "预算关卡零 LLM 短路（HTTP 200，不返回 429）" },
+    { "id": "gw-005", "input": "Token 日配额超限", "expected": { "scenario": "RATE_LIMITED", "outcome": "SHORT_CIRCUIT", "degraded": true, "zeroLlm": true }, "note": "日配额耗尽→话术短路" }
+  ]
+}

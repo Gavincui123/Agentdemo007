@@ -1,0 +1,246 @@
+# =============================================================================
+# Agentdemo007 — 共享基线配置（dev/prod/staging 共同继承）
+# 环境隔离通过 application-{profile}.yml 覆盖；密钥一律经环境变量注入。
+# =============================================================================
+
+spring:
+  application:
+    name: Agentdemo007
+  profiles:
+    active: dev
+  # Nacos 配置中心（官方 spring-alibaba-nacos-config）：spring.config.import 接入 dataId。
+  # dataId 须带 .yaml 扩展名，组件按扩展名选 YAML 解析器；namespace 留空=public（填 ID 非显示名）。
+  # 6 个连接参数只能放本地/env（鸡生蛋），其余配置放 Nacos dataId。
+  # optional: 前缀使 Nacos 不可达时优雅跳过（降级本地、不阻塞启动）；启动日志可见「Load config success / 跳过」以确认是否加载。
+  config:
+    import: "optional:nacos:Agentdemo007.yaml?group=DEFAULT_GROUP"
+  nacos:
+    config:
+      server-addr: ${NACOS_SERVER_ADDR:120.48.5.195:8848}
+      namespace: ${NACOS_NAMESPACE:}            # 留空=public；必须填 namespace ID 非显示名
+      group: ${NACOS_GROUP:DEFAULT_GROUP}
+      username: ${NACOS_USERNAME:}              # 服务器 Nacos 开鉴权时填；空=不传凭据
+      password: ${NACOS_PASSWORD:}
+      file-extension: yaml
+  jackson:
+    default-property-inclusion: non_null
+    date-format: yyyy-MM-dd'T'HH:mm:ssXXX
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 50MB
+  # ---- Phase 13 JPA 数据源（dev H2 内存库 / prod MySQL；env 变量与既有 datasource 占位同源）----
+  datasource:
+    url: ${DS_URL:}
+    username: ${DS_USERNAME:}
+    password: ${DS_PASSWORD:}
+    driver-class-name: ${DS_DRIVER:org.h2.Driver}
+  jpa:
+    hibernate:
+      ddl-auto: ${JPA_DDL:update}
+    open-in-view: false
+    show-sql: ${JPA_SHOW_SQL:false}
+    properties:
+      hibernate:
+        jdbc.time_zone: UTC
+  # ---- Phase 13 RabbitMQ 连接（dev 默认 app.rabbitmq.enabled=false 不连 broker；
+  #       prod 经 RABBITMQ_ENABLED=true 启用，消费者 + RabbitMqConfig 条件装配）----
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    virtual-host: ${RABBITMQ_VIRTUAL_HOST:/}
+    listener:
+      simple:
+        # 消费者手动确认：毒消息 nack(requeue=false) → 死信队列，不阻塞消费
+        acknowledge-mode: manual
+        retry:
+          enabled: true
+          max-attempts: ${RABBITMQ_MAX_ATTEMPTS:3}
+          initial-interval: 1000ms
+  # ---- Redis 连接（Spring 标准 spring.data.redis.*，自动配置 LettuceConnectionFactory/StringRedisTemplate）----
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:5000ms}
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+    connection-timeout: 30000
+
+# ---- Actuator ----
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: Agentdemo007
+    export:
+      prometheus:
+        enabled: true
+
+# ---- 日志 ----
+logging:
+  level:
+    root: WARN
+    com.agentdemo007: INFO
+    com.agentdemo007.intent: DEBUG
+  file:
+    name: logs/agentdemo007.log
+
+# =============================================================================
+# 密钥占位（生产环境通过环境变量注入，配置文件仅 ${} 占位，不落明文）
+# =============================================================================
+
+# ---- LLM 主备容灾（OpenAI 兼容端点，多服务商）----
+# llm.enabled=false/缺省 → Noop 占位执行器（dev 降级，不调真实引擎；下游收口 MODEL_DOWN）
+# llm.enabled=true        → LlmConfig 按 providers 装配路由执行器 + 模型级熔断 + 主备故障转移
+# providers 列表（含真实 base-url/api-key/大·小模型）由 Nacos dataId（Agentdemo007.yaml）注入；
+# 本地仅留 enabled 与熔断默认，密钥一律经环境变量（${}）注入、不落明文。
+# providers 结构（Nacos 覆盖示例）：
+#   providers:
+#     - id: siliconflow           # 主（首位，打 RouteType 标签、路由主选）
+#       base-url: https://api.siliconflow.cn/v1
+#       api-key: ${SF_KEY}
+#       large-model: Qwen/Qwen3.5-35B-A3B
+#       small-model: Qwen/Qwen3.5-27B
+#       disable-thinking-params:  # SiliconFlow 关思考：enable_thinking=false（请求 disableThinking=true 时合并）
+#         enable_thinking: false
+#     - id: aliyun                 # 备（阿里云 DashScope，OpenAI 兼容；不打标签，仅经 fallback 链可达）
+#       base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+#       api-key: ${ALIYUN_KEY}
+#       large-model: qwen3.8-max
+#       small-model: deepseek-v4-pro-0813
+#       disable-thinking-params:  # Aliyun 关思考：enable_thinking=false（请求 disableThinking=true 时合并）
+#         enable_thinking: false
+llm:
+  enabled: ${LLM_ENABLED:false}
+  # 生成最大 token（推理模型思考开时 1024 常令 reasoning 耗尽→空 content→LlmUnavailable；调高如 4096 给 reasoning+答案留预算，或关 thinking.enabled=false 根除）
+  max-tokens: ${LLM_MAX_TOKENS:1024}
+  # 思考模式开关（意图驱动）：闲聊(CHIT_CHAT)恒关思考；非闲聊由 enabled 定（true=开思考，默认）。
+  # 关闭后非闲聊请求也会把每 provider 的 disable-thinking-params 合并进 body 关思考。
+  thinking:
+    enabled: ${LLM_THINKING_ENABLED:true}
+  circuit-breaker:
+    window-ms: ${LLM_CB_WINDOW_MS:60000}
+    failure-threshold: ${LLM_CB_FAILURE_THRESHOLD:5}
+    cooldown-ms: ${LLM_CB_COOLDOWN_MS:30000}
+
+# ---- 关键词前置分诊（intent.keywords，Phase 7·第一层关键词识别）----
+# KeywordTriageStep(@Order 150，流水线第一步) 对 rawInput 跑规则匹配：
+#   命中 CHIT_CHAT/REASONING 等且置信达标 → 设 intent（下游改写/重识别跳过，零 LLM）；
+#   命中注入模式 → 立即短路（零 LLM）；无命中/冲突 → 交后续改写+小模型识别。
+# rules 非空 → 替换内置 11 条默认关键词（你拥有完整列表，可经 Nacos 增删）；空/缺省 → 用内置默认。
+# 注入模式 InjectionPatternRule 恒内置、不配置化（安全：注入词表不应被随意增删）。
+# 意图枚举：CHIT_CHAT / REASONING / LONG_CONTEXT / STRUCTURED_EXTRACTION / TRANSFER_TO_HUMAN
+# 在 Nacos dataId 或 application-{profile}.yml 覆盖示例（取消注释即生效）：
+# intent:
+#   keywords:
+#     rules:
+#       - keyword: 你好
+#         intent: CHIT_CHAT
+#         confidence: 0.85
+#       - keyword: 在吗
+#         intent: CHIT_CHAT
+#         confidence: 0.85
+#       - keyword: 分析
+#         intent: REASONING
+#         confidence: 0.9
+#       - keyword: 转人工
+#         intent: TRANSFER_TO_HUMAN
+#         confidence: 0.95
+intent:
+  keywords:
+    rules: []  # 空=用内置 11 条默认关键词；填入即替换默认
+
+# ---- Phase 21 稠密嵌入（主备容灾，OpenAI 兼容 /v1/embeddings）----
+# embedding.enabled=false/缺省 → dev HashEmbeddingService（假向量，不调 API；混合检索稠密通道占位）；
+# embedding.enabled=true        → EmbeddingConfig 按 providers 装配 SiliconFlowEmbeddingService + 主备。
+# 主备全失败→抛→HybridRetriever 降级稀疏(BM25)-only 继续（不回退 Hash，避免向量空间不一致）。
+# providers 结构（Nacos 覆盖示例）：
+#   providers:
+#     - id: siliconflow
+#       base-url: https://api.siliconflow.cn/v1
+#       api-key: ${SF_KEY}
+#       model: Qwen/Qwen3-Embedding-8B
+embedding:
+  enabled: ${EMBEDDING_ENABLED:false}
+
+# ---- Phase 21 稀疏重排（主备容灾，/v1/rerank；稀疏召回恒本地 BM25 无需 provider）----
+# reranker.enabled=false/缺省 → dev Bm25Reranker（BM25-lite，本地，不调 API）；
+# reranker.enabled=true        → RerankerConfig 按 providers 装配 SiliconFlowReranker + 主备。
+# 主备全失败→降级 BM25（重排只改顺序，安全）。
+# providers 结构（Nacos 覆盖示例）：
+#   providers:
+#     - id: siliconflow
+#       base-url: https://api.siliconflow.cn/v1
+#       api-key: ${SF_KEY}
+#       model: Qwen/Qwen3-Reranker-8B
+reranker:
+  enabled: ${RERANKER_ENABLED:false}
+
+# （Redis 连接参数已并入 spring.data.redis.*；根级 redis:/rabbitmq:/datasource: 死配置均已删；session-ttl 见 app.session-cache.ttl）
+
+# ---- 审计 ----
+audit:
+  retention-days: ${AUDIT_RETENTION_DAYS:180}
+  enabled: ${AUDIT_ENABLED:true}
+
+# ---- Phase 19 管理台/评测鉴权令牌（dev 默认仅联调用，prod 一律经环境变量注入）----
+agentdemo:
+  admin:
+    token: ${ADMIN_TOKEN:dev-admin-token}
+  eval:
+    token: ${EVAL_TOKEN:dev-eval-token}
+
+# ---- 模型选择策略（tag|weight|cost，默认 tag，可配置切换） ----
+app:
+  model-selector:
+    strategy: ${MODEL_SELECTOR_STRATEGY:tag}
+  # ---- 会话缓存：app.redis.enabled=true→真实 Redis（spring.data.redis.* 连接）；false→内存兜底 ----
+  redis:
+    enabled: ${REDIS_ENABLED:false}
+  session-cache:
+    ttl: ${REDIS_SESSION_TTL:3600s}
+  # ---- Phase 9 工具自纠正：最大迭代次数（耗尽→TOOL_FAILURE 话术短路） ----
+  tool:
+    max-iterations: ${TOOL_MAX_ITERATIONS:3}
+  # ---- Phase 10 RAG：Top-K 召回上限、相关性阈值、数量下限、种子语料开关 ----
+  rag:
+    top-k: ${RAG_TOP_K:5}
+    min-score: ${RAG_MIN_SCORE:0.3}
+    min-count: ${RAG_MIN_COUNT:1}
+    seed:
+      enabled: ${RAG_SEED_ENABLED:true}
+  # ---- Phase 11 HITL：超时阈值（毫秒，超时未确认→HITL_TIMEOUT 话术 + 工单） ----
+  hitl:
+    timeout-ms: ${HITL_TIMEOUT_MS:300000}
+  # ---- Phase 12 结构化输出：Schema 校验失败最大重试次数（耗尽→OUTPUT_FALLBACK 话术兜底） ----
+  output:
+    max-retries: ${OUTPUT_MAX_RETRIES:2}
+  # ---- Phase 13 异步持久化：RabbitMQ 启用开关（dev 默认 false→NoopMessagePublisher 不连 broker，
+  #       会话/审计不入库仅记 log；prod 设 true→消费者 + 真实 publisher + DLQ 条件装配）----
+  rabbitmq:
+    enabled: ${RABBITMQ_ENABLED:false}
+  # ---- Phase 14 编排模式：linear（线性编排器，缺省对照）/ graph（LangGraph 图编排）。
+  #       ChatController 只依赖 PipelineExecutor 接口，按此切换实现（换引擎不换出口）----
+  pipeline:
+    mode: ${PIPELINE_MODE:linear}
+  # ---- Phase 14 LangGraph 死循环护栏：单请求最大迭代次数（§5.13 兜底，图模式生效）----
+  langgraph:
+    max-iterations: ${LANGGRAPH_MAX_ITERATIONS:25}

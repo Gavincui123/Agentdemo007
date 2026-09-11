@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.1</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com</groupId>
+    <artifactId>Agentdemo007</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>Agentdemo007</name>
+    <description>Agentdemo007</description>
+    <url/>
+    <licenses>
+        <license/>
+    </licenses>
+    <developers>
+        <developer/>
+    </developers>
+    <scm>
+        <connection/>
+        <developerConnection/>
+        <tag/>
+        <url/>
+    </scm>
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+        </dependency>
+
+        <!-- Phase 3 Redis 会话缓存（仅在 redis.enabled=true 时装配后端） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- 官方 Nacos 配置中心：spring-alibaba-nacos-config（独立组件，不拖 Spring Cloud 全家桶；
+             经 spring.config.import=nacos: 接入；@NacosConfig/@NacosConfigListener 支持运行期热更新。
+             Boot 4.1.1 + Spring 7.0.9 解析干净，无冲突） -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-alibaba-nacos-config</artifactId>
+            <version>2025.1.0.0</version>
+        </dependency>
+
+        <!-- Nacos 客户端 3.2.4 显式覆盖（direct 必胜 BOM 钉的 3.1.1）：
+             NacosPromptSource 用 com.alibaba.nacos.api.ai.* Prompt API（≥3.2.0），3.1.1 无 api.ai 包会编译失败 -->
+        <dependency>
+            <groupId>com.alibaba.nacos</groupId>
+            <artifactId>nacos-client</artifactId>
+            <version>3.2.4</version>
+        </dependency>
+
+        <!-- Phase 13 异步持久化：RabbitMQ 削峰（@RabbitListener 消费者 + RabbitMqConfig 经
+             app.rabbitmq.enabled=true 条件装配；dev 默认 NoopMessagePublisher 不连 broker） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+        <!-- Phase 13 异步落库：JPA（会话/审计实体 + Repository）；H2（dev/test 内存库）/ MySQL（prod） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Phase 14 LangGraph 集成：langgraph4j-core 1.5.14（Java 17；仅依赖 slf4j + async-generator，
+             gson/Jackson2 为 provided 不传递；不引 langchain4j 桥接，与 Boot4.1/Jackson3 零冲突） -->
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-core</artifactId>
+            <version>1.5.14</version>
+        </dependency>
+
+        <!-- LangChain4j（mvnrepository 验 1.19.0 GA；无 langchain4j-bom，直接钉版本）。
+             core：@Tool/@P 注解 + ToolSpecifications schema 生成 + ToolExecutionRequest(tool_call 载体)。
+             main(langchain4j)：AiServices 当家 function-calling 循环 + 韧性扩展点 seam——
+             ToolExecutor(装饰 DefaultToolExecutor 接熔断/audit)、ToolProvider(按请求出 spec→executor 子集=RoutePlan)、
+             ToolExecutionErrorHandler(自纠正→Reparser 退役)、GuardrailService(安全→SecurityAuditStep 退役)、
+             RetrievalAugmentor(RAG)、systemMessageProviderWithContext(上下文)、TokenStream(流式)、BeforeToolExecution(HITL)。
+             方向(2026-09-10 纠正，见 [[langchain4j-boot4-compat-findings]] [[dont-hardwrite-use-dep-methods]])：
+             AiServices 当家循环 + 韧性装饰上 seam（用依赖+保韧性不二选一，旧 option B 手撸循环退役）。
+             不引 boot4-starter(langchain4j-open-ai-spring-boot4-starter:1.19.0-beta29)——它 auto-config
+             OpenAiChatModel bean 与手写 OpenAiModelExecutor 竞争；模型层先适配(ChatLlmService→ChatModel)，
+             替 HTTP 留后切片(需查官方文档+验型号)。Jackson：LC4j1.x Jackson2(com.fasterxml) 与 Boot4
+             Jackson3(tools.jackson) 包名不同，无类冲突共存。 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-core</artifactId>
+            <version>1.19.0</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>1.19.0</version>
+        </dependency>
+
+        <!-- langchain4j-open-ai 1.19.0（Maven Central 最新稳定版；1.20.0 未上 Central/1.19.1 禁用，
+             2026-09-11 用户查官方文档确认）。OpenAiChatModel = LC4j 原生 OpenAI 兼容 HTTP 客户端
+             （请求序列化/响应解析/自动重试/超时/流式/工具调用），替自研 OpenAiModelExecutor-HTTP。
+             SiliconFlow 适配：baseUrl/apiKey/modelName + customParameters 注入 enable_thinking（→请求体顶层字段）；
+             ChatModelListener.onRequest 可 per-request 改 customParameters（项目"意图驱动关思考"seam：
+             闲聊/决策调用 enable_thinking=false，其他由 llm.thinking.enabled 开关定）。
+             不引 boot4-starter（其 auto-config OpenAiChatModel bean 与手写执行器竞争）。
+             customRequestBodyModifier 是 1.20 新 API，1.19.0 无——不用。Jackson2(com.fasterxml) 与 Boot4
+             tools.jackson 包名不同无冲突共存（见 [[langchain4j-boot4-compat-findings]]）。 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+            <version>1.19.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

@@ -1,0 +1,14 @@
+{
+  "stage": "resilience",
+  "description": "Phase 5 韧性层测评数据：验证四层异常分诊、重试退避、故障转移、熔断、工具反馈的行为决策。expected.category 取值 RETRYABLE_TRANSIENT/NON_RETRYABLE_CLIENT/TOOL_RECOVERABLE/FATAL；decision 取值 RETRY/FAIL/FEEDBACK_TO_LLM/AUDIT_AND_FAIL。",
+  "cases": [
+    { "id": "res-001", "input": "主模型返回 429（带 Retry-After=5s）", "expected": { "category": "RETRYABLE_TRANSIENT", "decision": "RETRY", "honorRetryAfter": true, "maxAttempts": 3, "recovered": true }, "note": "瞬态429→同模型退避重试（遵循Retry-After不抖动），3次内成功" },
+    { "id": "res-002", "input": "主模型持续 5xx，重试耗尽后切备选成功", "expected": { "category": "RETRYABLE_TRANSIENT", "decision": "RETRY", "exhaustedOnPrimary": true, "failover": true, "recovered": true }, "note": "同模型重试耗尽→切下一个候选模型（重试与故障转移正交）" },
+    { "id": "res-003", "input": "主模型返回 403 鉴权失败", "expected": { "category": "NON_RETRYABLE_CLIENT", "decision": "FAIL", "noRetryOnSameModel": true, "failover": true }, "note": "403不重试同模型，但切备选（不同凭证/端点）" },
+    { "id": "res-004", "input": "主+备候选均瞬态耗尽", "expected": { "outcome": "FAILOVER_EXHAUSTED", "throws": "LlmUnavailableException", "degraded": true }, "note": "全候选耗尽→LlmUnavailableException→上层收口为FAILOVER_EXHAUSTED话术" },
+    { "id": "res-005", "input": "接入层检测到提示注入（FatalException）", "expected": { "category": "FATAL", "decision": "AUDIT_AND_FAIL", "zeroLlm": true, "noFailover": true, "audited": true }, "note": "致命→立即拦截不提交LLM、不故障转移、审计留痕" },
+    { "id": "res-006", "input": "工具参数错误（ToolRecoverableException），迭代<上限", "expected": { "category": "TOOL_RECOVERABLE", "decision": "FEEDBACK_TO_LLM", "resubmit": true, "fullErrorFedBack": true }, "note": "完整异常内容反馈LLM自纠正" },
+    { "id": "res-006b", "input": "工具错误自纠正迭代达上限", "expected": { "outcome": "EXHAUSTED", "degraded": true, "noMoreResubmit": true }, "note": "超过最大迭代→交上层降级收口，不再反馈" },
+    { "id": "res-007", "input": "熔断器连续失败达阈值→OPEN快速失败；冷却后HALF_OPEN放行探针", "expected": { "openFastFail": true, "halfOpenProbe": true, "successCloses": true, "failureReopens": true }, "note": "三态状态机：CLOSED→OPEN(快速失败)→HALF_OPEN(探针)→CLOSED(恢复)/OPEN(重开)" }
+  ]
+}

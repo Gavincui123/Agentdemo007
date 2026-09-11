@@ -1,0 +1,53 @@
+# =============================================================================
+# Agentdemo007 — dev（本地开发）环境配置
+# 覆盖 application.yml 中需要本地化调整的值。
+# =============================================================================
+
+spring:
+  datasource:
+    # dev 阶段 H2 内存库（启动即建表，JPA ddl-auto=update）
+    url: jdbc:h2:mem:agentdemo007;DB_CLOSE_DELAY=-1;MODE=MySQL
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+  # dev 默认 app.rabbitmq.enabled=false → 无 @RabbitListener bean → 无容器启动（不连 broker）；
+  # 本地需真实 MQ：RABBITMQ_ENABLED=true + 启动本地 rabbitmq
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.agentdemo007: DEBUG
+    com.agentdemo007.intent: TRACE
+
+# dev 阶段 Nacos：经 application.yml 的 spring.config.import 始终接入服务器（120.48.5.195:8848）；
+# 完全离线跑：export SPRING_CONFIG_IMPORT=（置空）跳过导入。
+# （旧 nacos: refresh-enabled 已删 —— spring-alibaba-nacos-config 默认监听热更新）
+
+app:
+  rabbitmq:
+    enabled: true
+  redis:
+    enabled: true
+
+management:
+  health:
+    rabbit:
+      enabled: false
+    redis:
+      enabled: false
+
+intent:
+  keywords:
+    rules:
+      - keyword: 你好
+        intent: CHIT_CHAT
+        confidence: 0.85
+      - keyword: 在吗        # 你自己加的词
+        intent: CHIT_CHAT
+        confidence: 0.85
+      - keyword: 分析
+        intent: REASONING

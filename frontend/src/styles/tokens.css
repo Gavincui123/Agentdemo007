@@ -1,0 +1,168 @@
+/*
+ * Agentdemo007 控制台 · 设计令牌 + Element Plus 深色遥测主题覆写
+ *
+ * 主体语言：深靛蓝（午夜蓝紫底，非纯黑）+ 信号琥珀（降级/熔断 OPEN·「话术短路」态）
+ * + 磷光青（健康/实时·主操作）。暖琥珀+冷青编码系统两核心态——降级仍答 vs 健康实时。
+ * 字体：IBM Plex Sans（正文/UI）+ IBM Plex Mono（指标/traceId/标签·仪表读出声）。
+ * 签名：七层流水线脊（pipeline spine）——架构节点链，活跃节点磷光青、降级节点琥珀。
+ */
+
+:root {
+  /* ---- 靛蓝墨阶 ---- */
+  --ink-900: #0b1020; /* 主底 */
+  --ink-800: #131a2e; /* 表面 */
+  --ink-700: #1c2540; /* 抬升表面/卡片 */
+  --ink-600: #2a3556; /* 边框 */
+  --ink-500: #3a4670; /* 次边框/分隔 */
+  --ink-100: #e8ecf5; /* 主文字 */
+  --ink-300: #9aa4bd; /* 弱文字 */
+
+  /* ---- 信号色 ---- */
+  --signal: #5eead4; /* 磷光青·健康/实时/主操作 */
+  --signal-dim: #2dd4bf;
+  --amber: #f5b941; /* 降级/话术/熔断 OPEN */
+  --amber-dim: #d99a2b;
+  --crimson: #f87171; /* 危险/错误 */
+  --green: #4ade80; /* 成功 */
+
+  /* ---- 字体 ---- */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;
+
+  /* ---- 间距/圆角 ---- */
+  --radius: 6px;
+  --radius-sm: 4px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* ---- Element Plus 令牌覆写（令靛蓝/青/琥珀主题压过默认深色） ---- */
+  --el-color-primary: #5eead4;
+  --el-color-primary-light-3: #7eeadd;
+  --el-color-primary-light-5: #2dd4bf;
+  --el-color-primary-light-7: #1aa896;
+  --el-color-primary-light-8: #14806f;
+  --el-color-primary-light-9: #0e5a4e;
+  --el-color-primary-dark-2: #2dd4bf;
+
+  --el-color-success: #4ade80;
+  --el-color-warning: #f5b941;
+  --el-color-danger: #f87171;
+  --el-color-error: #f87171;
+  --el-color-info: #9aa4bd;
+
+  --el-bg-color: #131a2e;
+  --el-bg-color-page: #0b1020;
+  --el-bg-color-overlay: #1c2540;
+  --el-fill-color: #1c2540;
+  --el-fill-color-light: #131a2e;
+  --el-fill-color-lighter: #131a2e;
+  --el-fill-color-blank: #0b1020;
+  --el-border-color: #2a3556;
+  --el-border-color-light: #2a3556;
+  --el-border-color-lighter: #1c2540;
+  --el-text-color-primary: #e8ecf5;
+  --el-text-color-regular: #e8ecf5;
+  --el-text-color-default: #e8ecf5;
+  --el-text-color-placeholder: #9aa4bd;
+  --el-text-color-secondary: #9aa4bd;
+  --el-disabled-bg-color: #1c2540;
+  --el-disabled-text-color: #5a6588;
+  --el-mask-color: rgba(11, 16, 32, 0.7);
+  --el-box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --el-box-shadow-light: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--ink-900);
+  color: var(--ink-100);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 数据/trace/代码统一仪表读出声 */
+code,
+kbd,
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: 'tnum' 1;
+}
+
+/* 数字等宽——指标卡片对齐 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--signal);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* 可见键盘焦点（磷光青环）——可达性 */
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+/* 降级/话术态气泡——琥珀左边框，标识「系统仍答」 */
+.degradation-note {
+  border-left: 3px solid var(--amber);
+  background: rgba(245, 185, 65, 0.08);
+  color: var(--amber);
+}
+
+/* 健康实时态——磷光青左边框 */
+.live-note {
+  border-left: 3px solid var(--signal);
+  background: rgba(94, 234, 212, 0.06);
+}
+
+/* 卡片表面 */
+.surface {
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+}
+
+/* 滚动条——深色 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-500) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--ink-500);
+  border-radius: 4px;
+}
+
+/* 尊重 prefers-reduced-motion——关闭非必要动画 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

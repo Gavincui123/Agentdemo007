@@ -1,0 +1,105 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: "Root@123456"
+      MYSQL_DATABASE: default_db
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    command:
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+    networks:
+      - middleware-net
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "Pg@123456"
+      POSTGRES_DB: default_pg
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/pg:/var/lib/postgresql/data
+    networks:
+      - middleware-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: always
+    command: redis-server --requirepass "Redis@123456"
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - middleware-net
+
+  rabbitmq:
+    image: rabbitmq:latest
+    container_name: rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: "Rabbit@123456"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
+    networks:
+      - middleware-net
+
+  chroma:
+    image: chromadb/chroma:1.0.8
+    container_name: chroma
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/chroma:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ALLOW_ORIGINS=*
+    networks:
+      - middleware-net
+
+  nacos:
+    image: nacos/nacos-server:latest
+    container_name: nacos
+    restart: always
+    environment:
+      MODE: standalone
+      SPRING_DATASOURCE_PLATFORM: mysql
+      MYSQL_SERVICE_HOST: mysql
+      MYSQL_SERVICE_PORT: 3306
+      MYSQL_SERVICE_DB_NAME: nacos_config
+      MYSQL_SERVICE_USER: root
+      MYSQL_SERVICE_PASSWORD: "Root@123456"
+      MYSQL_SERVICE_DB_PARAM: "characterEncoding=UTF-8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useUnicode=true&useSSL=false&serverTimezone=Asia/Shanghai"
+      NACOS_AUTH_TOKEN: "DGORhba9pnmnrStiYQKq6Vajt0bIbr8mC+kAln/wZWo="
+      NACOS_AUTH_IDENTITY_KEY: "nacosServerIdentityKey"
+      NACOS_AUTH_IDENTITY_VALUE: "nacosServerIdentityValue"
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+      - "8080:8080"
+    volumes:
+      - ./data/nacos:/home/nacos/data
+    depends_on:
+      - mysql
+    networks:
+      - middleware-net
+
+networks:
+  middleware-net:
+    driver: bridge

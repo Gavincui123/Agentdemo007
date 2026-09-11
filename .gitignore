@@ -1,18 +1,36 @@
-# Build and Release Folders
-bin-debug/
-bin-release/
-[Oo]bj/
-[Bb]in/
+# Build output
+target/
+build/
+*.class
 
-# Other files and folders
+# Maven wrapper jar (regenerable via mvnw)
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
 .settings/
+.project
+.classpath
+.factorypath
+.springBeans
+*.launch
 
-# Executables
-*.swf
-*.air
-*.ipa
-*.apk
+# OS
+.DS_Store
 
-# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
-# should NOT be excluded as they contain compiler settings and other important
-# information for Eclipse / Flash Builder.
+# Logs
+*.log
+logs/
+
+# CodeGraph index (regenerable)
+.codegraph/
+
+# Spring Boot repackaged backup
+*.original
+
+# Misc
+HELP.md

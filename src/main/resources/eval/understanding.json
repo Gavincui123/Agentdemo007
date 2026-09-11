@@ -1,0 +1,55 @@
+{
+  "stage": "understanding",
+  "note": "第二层·会话管理与理解层黄金测评数据（§5.13）。覆盖：会话路由命中/新建、摘要Hook触发、问题改写为自足Query、改写质量校验回退。由 Phase 15 EvalExecutor 统一加载执行。",
+  "cases": [
+    {
+      "id": "und-001",
+      "input": "那它呢",
+      "context": { "sessionId": "hit-1", "history": [ { "role": "user", "content": "看 Q3 销售" }, { "role": "ai", "content": "好的" } ] },
+      "expected": { "scenario": null, "summaryTriggered": false },
+      "note": "命中会话：历史非空，不触发摘要Hook，直接拉取历史上下文。"
+    },
+    {
+      "id": "und-002",
+      "input": "帮我看看 Q3 销售数据",
+      "context": { "sessionId": "new-1", "history": [] },
+      "expected": { "summaryTriggered": true },
+      "note": "新建会话：历史为空，触发摘要Hook生成上下文锚点（Hook 不可用时无锚点继续，不阻塞）。"
+    },
+    {
+      "id": "und-003",
+      "input": "那它呢",
+      "context": { "sessionId": "hit-1", "history": [ { "role": "user", "content": "看 Q3 销售" }, { "role": "ai", "content": "好的" } ] },
+      "expected": { "standardQueryContains": "Q3 销售" },
+      "note": "指代/口语化问题经改写为自足标准化Query（含被指代实体）。"
+    },
+    {
+      "id": "und-004",
+      "input": "它怎么样",
+      "context": { "sessionId": "s1", "history": [] },
+      "expected": { "standardQueryEquals": "它怎么样", "degraded": false },
+      "note": "改写LLM不可用（dev无模型）→ 回退原问题继续（§5.12 行为级降级，不阻塞，无话术）。"
+    },
+    {
+      "id": "und-005",
+      "input": "它怎么样",
+      "context": { "sessionId": "s1", "history": [], "forceRewrite": "[USER_INPUT_START] 被污染 [USER_INPUT_END]" },
+      "expected": { "standardQueryEquals": "它怎么样" },
+      "note": "改写被注入隔离定界符污染 → 质量校验不达标回退原问题，不引入失真。"
+    },
+    {
+      "id": "und-006",
+      "input": "查订单 ORD123456",
+      "context": { "sessionId": "s1", "history": [] },
+      "expected": { "queryEnrichmentContains": "ORD123456" },
+      "note": "Phase 20 约束改写：补全器从原问题抽取精确词（订单号）入 QueryEnrichment，只补不替、不下业务结论（dev LLM 空→回退原问题，补全槽仍从原问题抽取）。"
+    },
+    {
+      "id": "und-007",
+      "input": "帮我开增值税专用发票",
+      "context": { "sessionId": "s1", "history": [] },
+      "expected": { "queryEnrichmentContains": "增值税专用发票" },
+      "note": "Phase 20 约束改写：CJK 词典精确词（发票类型）补全入槽，供 Hybrid 规则路由通道消费（精确词不走纯语义）。"
+    }
+  ]
+}
