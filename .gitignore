@@ -19,6 +19,10 @@ build/
 .springBeans
 *.launch
 
+# Claude Code / Cursor local config (session/IDE, not project code)
+.claude/
+.cursor/
+
 # OS
 .DS_Store
 
