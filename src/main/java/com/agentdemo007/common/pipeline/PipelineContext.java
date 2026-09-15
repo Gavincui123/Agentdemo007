@@ -1,6 +1,8 @@
 package com.agentdemo007.common.pipeline;
 
+import com.agentdemo007.capability.plan.RoutePlan;
 import com.agentdemo007.common.degradation.DegradationScenario;
+import com.agentdemo007.common.progress.ProgressEmitter;
 import com.agentdemo007.common.trace.TraceId;
 import com.agentdemo007.gateway.config.RouteRule;
 import com.agentdemo007.intent.Intent;
@@ -23,7 +25,7 @@ import java.util.List;
  * <ul>
  *   <li>Phase 3/6：{@code history}（标准 LLM 消息历史）</li>
  *   <li>Phase 6：{@code standardQuery}（标准化问题）</li>
- *   <li>Phase 7：{@code intent}（意图枚举）、{@code routeType}（路由类型）</li>
+ *   <li>Phase 7：{@code intent}（意图枚举）、{@code routeType}（路由类型）、{@code routePlan}（路由计划）</li>
  *   <li>Phase 8：{@code assembledPrompt}（三层隔离拼接结果）、{@code ragFragments}/{@code toolResults}
  *      （本层为消费者，Phase 9-11 生产者步骤在 {@code @Order} 6xx 填充后纳入客观数据层）</li>
  *   <li>Phase 11：{@code hitlState}</li>
@@ -35,6 +37,9 @@ public class PipelineContext {
     private final String traceId;
     private final String sessionId;
     private final String rawInput;
+    /** [[business-tools-workflow-dag]] per-request 当前用户 id（前端 ChatRequest 传入；工作流校验订单归属用）。
+     *  null=无鉴权上下文（eval/未传），图 baked currentUserId 兜底——迭代后真鉴权强制非空。 */
+    private String userId;
     private String finalReply;
     private boolean degraded;
     private DegradationScenario scenario;
@@ -49,18 +54,33 @@ public class PipelineContext {
     private double intentConfidence;
     private RouteRule.RouteType routeType;
     private String selectedModelId;
+    // Phase 7 路由计划字段（§5.14：RoutePlan 强类型收口于此；RoutePlanStep@605 产出，
+    // 下游 CapabilityStage@6xx/ToolExecutionStep/RagStep/HITL 消费能力决策——needs_rag/
+    // needs_business_tools/required_tools/knowledge_domains/risk_level/requires_workflow/fallback_policy）
+    private RoutePlan routePlan;
     // Phase 8 上下文构建工厂强类型字段（§5.14：ragFragments/toolResults 为消费者字段，
     // 由 Phase 9-11 生产者步骤填充；assembledPrompt 为本工厂拼接产出）
     private List<String> ragFragments = new ArrayList<>();
     // Phase 20 RAG citation（§5.14：强类型收口，来源+摘要串；RagStep 命中时填，空则回答无来源标注）
     private List<String> ragCitations = new ArrayList<>();
     private List<String> toolResults = new ArrayList<>();
+    // [[business-tools-workflow-dag]] §2.2：tool-sourced 高置信外部系统事实通道（RUNTIME 工具结果：
+    // 订单/用户/商品查询），SystemAnchorLayer 消费进 Runtime 块；区别于 toolResults（COMPUTE 简单计算）
+    private List<String> runtimeFacts = new ArrayList<>();
     private List<ChatMessage> assembledPrompt = new ArrayList<>();
     // Phase 11/12 能力与输出层强类型字段（§5.14：hitlTicketId/modelResponse 收口于此）
     private String hitlTicketId;
     private String modelResponse;
+    // 高风险固定工作流（[[per-intent-dag]]）：RefundWorkflowGraph submit 节点产退款请求 id，审批门消费
+    private String workflowResult;
+    // [[business-tools-workflow-dag]] §2.4：业务驳回话术短路槽（Rejected 终态 → WorkflowExecutionStep 写此，
+    // OutputStep 守卫跳 LLM；非业务驳回为 null，走原 LLM 链不变）。业务驳回≠系统故障，不混 DegradationScenario。
+    private String presetReply;
     // Phase 13 审计事件强类型字段（§5.14：流水线内审计点收集于此，终端后置钩子刷出到 AuditProducer 异步落库）
     private List<AuditEvent> auditEvents = new ArrayList<>();
+    // #136 进度发射 seam（[[routeplan-design]]）：每请求实例，编排器/各步产进度事件经此发射；
+    // 缺省 NO_OP（同步 /chat + 单测零开销）；ChatController.chatStream 注入 SseProgressEmitter 桥接 SseEmitter 真异步 flush
+    private ProgressEmitter emitter = ProgressEmitter.NO_OP;
 
     public PipelineContext(String sessionId, String rawInput) {
         this(TraceId.current(), sessionId, rawInput);
@@ -87,6 +107,15 @@ public class PipelineContext {
 
     public String rawInput() {
         return rawInput;
+    }
+
+    /** 当前用户 id（per-request·前端 ChatRequest 传入；工作流校验订单归属。null=无鉴权上下文→图兜底）。 */
+    public String userId() {
+        return userId;
+    }
+
+    public void setUserId(String userId) {
+        this.userId = userId;
     }
 
     public String finalReply() {
@@ -199,6 +228,21 @@ public class PipelineContext {
         this.selectedModelId = selectedModelId;
     }
 
+    /**
+     * 路由计划（Phase 7 RoutePlanStep@605 产出的能力决策，[[routeplan-design]]）。
+     *
+     * <p>rule→LLM→rule 兜底混合产出：source=LLM_WITH_POLICY_CONSTRAINTS(采纳,conf 0.9) /
+     * DETERMINISTIC_FALLBACK(兜底,conf 0.75)。下游 CapabilityStage/ToolExecutionStep/RagStep/HITL
+     * 据此决定跑哪些工具/是否 RAG/是否人工。未产出时为 null（消费者须 null 防御）。
+     */
+    public RoutePlan routePlan() {
+        return routePlan;
+    }
+
+    public void setRoutePlan(RoutePlan routePlan) {
+        this.routePlan = routePlan;
+    }
+
     // ---- Phase 8 上下文构建工厂字段 ----
 
     /** RAG 安全片段文本（客观数据层消费；Phase 10 RAG 步骤填充，空则跳过 RAG 段）。 */
@@ -234,6 +278,19 @@ public class PipelineContext {
         this.toolResults = (toolResults != null) ? new ArrayList<>(toolResults) : new ArrayList<>();
     }
 
+    /**
+     * 工具产出的高置信外部系统事实（[[business-tools-workflow-dag]] §2.2 RUNTIME 通道：订单/用户/商品
+     * 查询结果）。{@link com.agentdemo007.context.SystemAnchorLayer} 消费进 Runtime 块（与 summary/intent/time
+     * 同居 System 锚点层，用户钦定 RunTime_* = 高置信独立通道，不降级进 RAG/Tool 段）；空跳过。
+     */
+    public List<String> runtimeFacts() {
+        return runtimeFacts;
+    }
+
+    public void setRuntimeFacts(List<String> runtimeFacts) {
+        this.runtimeFacts = (runtimeFacts != null) ? new ArrayList<>(runtimeFacts) : new ArrayList<>();
+    }
+
     /** 三层隔离拼接后的最终上下文（Sys→Runtime→His→RAG→Tool→User，供 Phase 12 网关步骤消费）。 */
     public List<ChatMessage> assembledPrompt() {
         return assembledPrompt;
@@ -263,6 +320,47 @@ public class PipelineContext {
         this.modelResponse = modelResponse;
     }
 
+    /**
+     * 退款工作流提交结果（高风险固定工作流 {@code submit_refund} 节点产出：退款请求 id/状态）。
+     * 审批门 {@code await} 消费；低风险意图不触发工作流，为 null。
+     */
+    public String workflowResult() {
+        return workflowResult;
+    }
+
+    public void setWorkflowResult(String workflowResult) {
+        this.workflowResult = workflowResult;
+    }
+
+    /**
+     * 业务驳回预设话术（[[business-tools-workflow-dag]] §2.4 E1：售后校验失败 Rejected 终态由
+     * {@code WorkflowExecutionStep} 写入此槽 + Proceed，{@code OutputStep} 开头守卫见非空即跳 LLM、
+     * {@code securityFilter.filter(presetReply)} 后写 finalReply 话术短路）。非业务驳回为 null（走原 LLM 链不变）。
+     */
+    public String presetReply() {
+        return presetReply;
+    }
+
+    public void setPresetReply(String presetReply) {
+        this.presetReply = presetReply;
+    }
+
+    // ---- 并发合并产物载体（[[p0-intent-switch-clarify-design]] §7）----
+
+    /**
+     * 并发合并产物载体（非 null = 并发合并模式，§7）：由 {@code WorkflowExecutionStep} 并发分支填充，
+     * {@code OutputStep} 合并分支消费。null = 非并发模式（单腿/正常链路不变）。
+     */
+    private ConcurrentReply concurrentReply;
+
+    public ConcurrentReply concurrentReply() {
+        return concurrentReply;
+    }
+
+    public void setConcurrentReply(ConcurrentReply concurrentReply) {
+        this.concurrentReply = concurrentReply;
+    }
+
     // ---- Phase 13 审计事件字段 ----
 
     /** 审计事件列表（流水线内审计点收集于此；终端后置钩子刷出到 AuditProducer 异步落库）。 */
@@ -275,5 +373,22 @@ public class PipelineContext {
         if (event != null) {
             this.auditEvents.add(event);
         }
+    }
+
+    // ---- #136 进度发射 seam 字段 ----
+
+    /**
+     * 进度发射器（[[routeplan-design]] #136）：编排器/各步产进度事件经此发射。缺省
+     * {@link ProgressEmitter#NO_OP}（同步 /chat + 单测零开销，不外泄）；chatStream 注入
+     * SseProgressEmitter 桥接 SseEmitter 真异步 flush。与 {@link #addAuditEvent}（审计落库）正交：
+     * 同一 step 产出，审计走 §5.14 落库信道，进度走 SSE 实时信道，互不替代。
+     */
+    public ProgressEmitter emitter() {
+        return emitter;
+    }
+
+    /** 注入进度发射器（null 安全→NO_OP，避免 NPE 反噬编排/降级收口）。 */
+    public void setEmitter(ProgressEmitter emitter) {
+        this.emitter = (emitter != null) ? emitter : ProgressEmitter.NO_OP;
     }
 }
