@@ -107,4 +107,16 @@ class RoutePlanTest {
         assertThat(c.secondaryIntent()).isEqualTo("product_query");
         assertThat(c.withAmbiguous(false).ambiguous()).isFalse();
     }
+
+    @Test
+    void routePlan_exposesAmbiguousAndSecondary() {
+        RoutePlanCandidate c = new RoutePlanCandidate(
+                "refund_request", true, true,
+                List.of("get_order_detail"), List.of("after_sale_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, true, "product_query");
+        RoutePlan rp = new RoutePlan(c, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, List.of());
+        assertThat(rp.ambiguous()).isTrue();
+        assertThat(rp.secondaryIntent()).isEqualTo("product_query");
+    }
 }
