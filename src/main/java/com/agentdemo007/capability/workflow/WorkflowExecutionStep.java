@@ -72,8 +72,8 @@ public class WorkflowExecutionStep implements PipelineStep {
             "order_query", "refund_status_query", "security_request",
             "degradation_request", "low_confidence_query");
 
-    /** 并发腿1 优雅话术（Timeout/Denied/异常，§7.4）。 */
-    static final String WORKFLOW_PENDING_TEXT = "退款申请已受理，正在审批中，请稍后查询进度。";
+    /** 并发腿1 优雅话术（Timeout/Denied/异常，§7.4）。OutputStep.awaitLeg1 跨包引用，须 public。 */
+    public static final String WORKFLOW_PENDING_TEXT = "退款申请已受理，正在审批中，请稍后查询进度。";
 
     /** 退款流图（refund_request → PolicyDomain.REFUND + RefundValidationRule）。 */
     private final AfterSaleWorkflow refundWorkflow;

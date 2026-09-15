@@ -2,8 +2,11 @@ package com.agentdemo007.output;
 
 import com.agentdemo007.access.PromptSanitizer;
 import com.agentdemo007.common.degradation.DegradationScenario;
+import com.agentdemo007.common.pipeline.ConcurrentReply;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.StepOutcome;
+import com.agentdemo007.common.progress.ProgressEvent;
+import com.agentdemo007.common.progress.ProgressEmitter;
 import com.agentdemo007.gateway.config.FailoverPolicy;
 import com.agentdemo007.gateway.config.FlowControlPolicy;
 import com.agentdemo007.gateway.config.ModelConfigCenter;
@@ -13,6 +16,7 @@ import com.agentdemo007.gateway.core.FailoverExecutor;
 import com.agentdemo007.gateway.core.LlmRequest;
 import com.agentdemo007.gateway.core.LlmResponse;
 import com.agentdemo007.gateway.core.ModelExecutor;
+import com.agentdemo007.gateway.core.StreamingReplyHandler;
 import com.agentdemo007.gateway.core.TokenBudgetChecker;
 import com.agentdemo007.gateway.core.UnifiedModelGateway;
 import com.agentdemo007.gateway.exception.ModelSelectionException;
@@ -24,6 +28,7 @@ import com.agentdemo007.session.model.ChatMessage;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -49,11 +54,20 @@ class OutputStepTest {
     private static class CapturingExecutor implements ModelExecutor {
         LlmResponse next;
         RuntimeException toThrow;
+        RuntimeException streamError; // 非 null → stream 调 onError（流式失败→OutputStep 回退阻塞 chatRaw）
 
         @Override
         public LlmResponse execute(LlmRequest request) {
             if (toThrow != null) throw toThrow;
             return (next != null) ? next : new LlmResponse(request.modelId(), "ok", 1);
+        }
+
+        @Override
+        public void stream(LlmRequest request, StreamingReplyHandler handler) {
+            if (streamError != null) { handler.onError(streamError); return; }
+            handler.onPartialResponse("您好，");
+            handler.onPartialResponse("订单已查到。");
+            handler.onCompleteResponse("您好，订单已查到。", 5);
         }
     }
 
@@ -184,9 +198,91 @@ class OutputStepTest {
         assertThat(c.modelResponse()).isEqualTo("原始回复");
     }
 
+    // ---- [[q2-token-streaming]] 流式分支：emitter 非 NO_OP → 逐 token 流式；onError→阻塞 fallback ----
+
+    @Test
+    void emitterPresent_streamsTokensAndSetsFinalReply() {
+        CapturingExecutor exec = new CapturingExecutor();
+        exec.next = new LlmResponse("m1", "BLOCKING_REPLY", 5); // 若误走阻塞会命中此——不应出现
+        OutputStep step = new OutputStep(service(exec, singleModel()), gateway, securityFilter,
+                OutputSchemaResolver.lenient(), ReAsk.none());
+        List<ProgressEvent> emitted = new ArrayList<>();
+        PipelineContext c = ctx(Intent.CHIT_CHAT, "查订单");
+        c.setEmitter(emitted::add); // 捕获 emitter（非 NO_OP）→ 触发流式分支
+
+        StepOutcome out = step.process(c);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(emitted).hasSize(2); // 2 个 TokenChunk
+        assertThat(emitted.get(0)).isInstanceOf(ProgressEvent.TokenChunk.class);
+        assertThat(((ProgressEvent.TokenChunk) emitted.get(0)).text()).isEqualTo("您好，");
+        assertThat(c.finalReply()).isEqualTo("您好，订单已查到。"); // 流式全文，非 BLOCKING_REPLY
+        assertThat(c.modelResponse()).isEqualTo("您好，订单已查到。");
+    }
+
+    @Test
+    void streamOnError_fallsBackToBlockingChatRaw() {
+        CapturingExecutor exec = new CapturingExecutor();
+        exec.streamError = new RuntimeException("stream broke");
+        exec.next = new LlmResponse("m1", "阻塞兜底回复", 5); // 流式失败→回退阻塞 chatRaw
+        OutputStep step = new OutputStep(service(exec, singleModel()), gateway, securityFilter,
+                OutputSchemaResolver.lenient(), ReAsk.none());
+        List<ProgressEvent> emitted = new ArrayList<>();
+        PipelineContext c = ctx(Intent.CHIT_CHAT, "查订单");
+        c.setEmitter(emitted::add);
+
+        StepOutcome out = step.process(c);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(c.finalReply()).isEqualTo("阻塞兜底回复"); // onError→回退阻塞 chatRaw（保主备容灾）
+    }
+
     /** 辅助：执行 step 并返回 context.finalReply（用于 normalReply 用例的二次断言）。 */
     private String step_process_finalReply(PipelineContext c, OutputStep step) {
         step.process(c);
         return c.finalReply();
+    }
+
+    /**
+     * Slice 4 [[business-tools-workflow-dag]] §2.4：presetReply 守卫——业务驳回（如订单非本人）时
+     * {@link com.agentdemo007.capability.workflow.WorkflowExecutionStep} 写 presetReply + Proceed，
+     * 本步须<b>跳过 LLM</b>（chatRaw 不调、modelResponse 不写），finalReply = securityFilter.filter(presetReply)。
+     * 话术短路（复用短路机制但不污染 DegradationScenario：业务驳回≠系统失败）。
+     */
+    @Test
+    void presetReplySet_skipsLlm_setsFinalReplyToPhrase() {
+        CapturingExecutor exec = new CapturingExecutor();
+        exec.next = new LlmResponse("m1", "LLM不该被调用", 5);
+        OutputStep step = new OutputStep(service(exec, singleModel()), gateway, securityFilter,
+                OutputSchemaResolver.lenient(), ReAsk.none());
+
+        PipelineContext c = ctx(Intent.CHIT_CHAT, "退货 ORD-003");
+        c.setPresetReply("订单 ORD-003 不属于当前账户，无法代为办理退货/退款。");
+        StepOutcome out = step.process(c);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(c.finalReply()).isEqualTo("订单 ORD-003 不属于当前账户，无法代为办理退货/退款。");
+        assertThat(c.modelResponse()).isNull(); // LLM 未调用（守卫短路），不写 modelResponse
+        assertThat(c.degraded()).isFalse(); // 话术短路非降级（业务驳回≠系统故障）
+    }
+
+    // ---- [[p0-intent-switch-clarify-design]] §7.5 并发合并分支 ----
+
+    @Test
+    void process_concurrentMerge_concatenatesLeg1AndLeg2() {
+        CapturingExecutor exec = new CapturingExecutor();
+        exec.next = new LlmResponse("m1", "推荐耳机商品。", 5);
+        OutputStep step = new OutputStep(service(exec, singleModel()), gateway, securityFilter,
+                OutputSchemaResolver.lenient(), ReAsk.none());
+
+        PipelineContext c = new PipelineContext("s1", "退款 ORD-001 想买耳机");
+        c.setConcurrentReply(new ConcurrentReply(
+                java.util.concurrent.CompletableFuture.completedFuture("您的退款申请已受理，已提交审批。"),
+                List.of(new ChatMessage.System("只答商品")), "product_query"));
+
+        StepOutcome out = step.process(c);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(c.finalReply()).contains("退款申请已受理").contains("推荐"); // 两段合并
     }
 }
