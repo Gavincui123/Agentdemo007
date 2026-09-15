@@ -2,6 +2,7 @@ package com.agentdemo007.capability.plan;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * RoutePlanCandidate 跨字段契约校验器（4 约束，参考系统 {@code validate_cross_field_contract}）。
@@ -19,6 +20,9 @@ import java.util.List;
  */
 public class RoutePlanContractValidator {
 
+    private static final Set<String> LEGAL_SECONDARY = Set.of(
+            "order_query", "refund_status_query", "product_query", "promotion_query", "faq_query");
+
     public List<String> validate(RoutePlanCandidate c) {
         List<String> errors = new ArrayList<>();
         if (!c.requiredTools().isEmpty() && !c.needsBusinessTools()) {
@@ -32,6 +36,13 @@ public class RoutePlanContractValidator {
         }
         if (c.requiresWorkflow() && c.fallbackPolicy() != RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST) {
             errors.add("requires_workflow=true 时 fallback_policy 必须为 workflow_first");
+        }
+        if (c.secondaryIntent() != null) {
+            if (c.secondaryIntent().equals(c.intent())) {
+                errors.add("secondary_intent 不得等于 intent");
+            } else if (!LEGAL_SECONDARY.contains(c.secondaryIntent())) {
+                errors.add("secondary_intent 只能从 order_query/refund_status_query/product_query/promotion_query/faq_query 选");
+            }
         }
         return errors;
     }

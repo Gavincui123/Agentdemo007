@@ -71,4 +71,43 @@ class RoutePlanContractValidatorTest {
         assertThat(errors).hasSize(1);
         assertThat(errors.get(0)).contains("workflow_first");
     }
+
+    private static final java.util.Set<String> LEGAL_SECONDARY =
+            java.util.Set.of("order_query", "refund_status_query", "product_query", "promotion_query", "faq_query");
+
+    private static RoutePlanCandidate base() {
+        return new RoutePlanCandidate("refund_request", true, true,
+                List.of("get_order_detail"), List.of("after_sale_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST);
+    }
+
+    @Test
+    void validate_legalSecondary_passes() {
+        RoutePlanContractValidator v = new RoutePlanContractValidator();
+        assertThat(v.validate(new RoutePlanCandidate("refund_request", true, true,
+                List.of("get_order_detail"), List.of("after_sale_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, false, "product_query"))).isEmpty();
+    }
+
+    @Test
+    void validate_secondaryEqualsIntent_fails() {
+        RoutePlanContractValidator v = new RoutePlanContractValidator();
+        assertThat(v.validate(new RoutePlanCandidate("refund_request", true, true,
+                List.of("get_order_detail"), List.of("after_sale_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, false, "refund_request")))
+                .isNotEmpty();
+    }
+
+    @Test
+    void validate_secondaryIsWorkflowIntent_fails() {
+        RoutePlanContractValidator v = new RoutePlanContractValidator();
+        assertThat(v.validate(new RoutePlanCandidate("refund_request", true, true,
+                List.of("get_order_detail"), List.of("after_sale_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, false, "return_request")))
+                .isNotEmpty();
+    }
 }
