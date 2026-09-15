@@ -30,7 +30,9 @@ public record RoutePlanCandidate(
         List<String> knowledgeDomains,
         RiskLevel riskLevel,
         boolean requiresWorkflow,
-        FallbackPolicy fallbackPolicy
+        FallbackPolicy fallbackPolicy,
+        boolean ambiguous,          // 新：LLM 标本轮多意图/反复/否定矛盾→true
+        String secondaryIntent      // 新：可空；仅「售后主意图+另有独立诉求」时填
 ) {
     /** 风险等级。HIGH 触发护栏覆盖（资金/权限不漏进普通对话）。 */
     public enum RiskLevel { LOW, MEDIUM, HIGH }
@@ -44,5 +46,19 @@ public record RoutePlanCandidate(
     public RoutePlanCandidate {
         requiredTools = requiredTools == null ? List.of() : List.copyOf(requiredTools);
         knowledgeDomains = knowledgeDomains == null ? List.of() : List.copyOf(knowledgeDomains);
+    }
+
+    /** 兼容构造器：8 参（旧调用点/测试零改动）→ ambiguous=false, secondaryIntent=null。 */
+    public RoutePlanCandidate(String intent, boolean needsRag, boolean needsBusinessTools,
+                              List<String> requiredTools, List<String> knowledgeDomains,
+                              RiskLevel riskLevel, boolean requiresWorkflow, FallbackPolicy fallbackPolicy) {
+        this(intent, needsRag, needsBusinessTools, requiredTools, knowledgeDomains,
+                riskLevel, requiresWorkflow, fallbackPolicy, false, null);
+    }
+
+    /** converge 兜底穿透用：保留原候选的 ambiguous。 */
+    public RoutePlanCandidate withAmbiguous(boolean value) {
+        return new RoutePlanCandidate(intent, needsRag, needsBusinessTools, requiredTools,
+                knowledgeDomains, riskLevel, requiresWorkflow, fallbackPolicy, value, secondaryIntent);
     }
 }
