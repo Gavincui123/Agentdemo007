@@ -3,11 +3,13 @@ package com.agentdemo007.capability.workflow;
 import com.agentdemo007.capability.plan.RoutePlan;
 import com.agentdemo007.capability.plan.RoutePlanBaselines;
 import com.agentdemo007.common.degradation.DegradationScenario;
+import com.agentdemo007.common.pipeline.ConcurrentReply;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.PipelineStep;
 import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.prompt.PromptRegistry;
 import com.agentdemo007.prompt.VersionSpec;
+import com.agentdemo007.session.model.ChatMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,10 +18,14 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
 
 /**
  * 高风险固定工作流触发步（第四层·{@code @Order(670)}，紧随 {@code RagStep(660)}、先于 {@code ContextBuilder(700)}）。
@@ -65,6 +71,9 @@ public class WorkflowExecutionStep implements PipelineStep {
     private static final Set<String> ABANDON_SET = Set.of(
             "order_query", "refund_status_query", "security_request",
             "degradation_request", "low_confidence_query");
+
+    /** 并发腿1 优雅话术（Timeout/Denied/异常，§7.4）。 */
+    static final String WORKFLOW_PENDING_TEXT = "退款申请已受理，正在审批中，请稍后查询进度。";
 
     /** 退款流图（refund_request → PolicyDomain.REFUND + RefundValidationRule）。 */
     private final AfterSaleWorkflow refundWorkflow;
@@ -187,9 +196,56 @@ public class WorkflowExecutionStep implements PipelineStep {
         }
     }
 
-    // Task 14 实现；本任务先留占位（单腿等价：跑图）以免并发触发分支编译不过
+    // [[p0-intent-switch-clarify-design]] §7 并发 fork-join：腿1 工作流图 Future + 腿2 子管线 + 合并产物
     private StepOutcome startConcurrent(PipelineContext context, String workflowIntent, String qIntent, boolean clarifyLeg) {
-        return runWorkflow(context, workflowIntent);
+        if (!clarifyLeg) {
+            pendingStore.remove(context.sessionId());
+        }
+        // 腿2：子管线组装
+        List<ChatMessage> leg2Prompt = null;
+        if (subPipelineRunner != null) {
+            PipelineContext sub = new PipelineContext(context.traceId(), context.sessionId(), context.rawInput());
+            sub.setUserId(context.userId());
+            sub.setHistory(context.history());
+            sub.setStandardQuery(context.standardQuery());
+            sub.setSummary(context.summary());
+            sub.setIntent(context.intent());
+            sub.setRoutePlan(RoutePlan.deterministic(baselines.baselineFor(qIntent)));
+            leg2Prompt = subPipelineRunner.runCapabilitySegment(sub);
+        }
+        if (leg2Prompt != null && !leg2Prompt.isEmpty()) {
+            leg2Prompt = new ArrayList<>(leg2Prompt); // 防不可变 List.of
+            leg2Prompt.add(new ChatMessage.System(
+                    "用户退款部分由系统另行回复，你只负责回答商品咨询部分，勿重复退款内容；若无检索结果请礼貌引导客户浏览其他商品，勿提及系统问题。"));
+        }
+        // 腿1：异步跑图 → 文本（Approved 确认/Rejected 驳回/Timeout+Denied+异常 优雅）
+        Future<String> leg1Text = CompletableFuture.supplyAsync(
+                () -> leg1TextFor(context, workflowIntent, clarifyLeg), executor);
+        context.setConcurrentReply(new ConcurrentReply(leg1Text, leg2Prompt, qIntent));
+        return new StepOutcome.Proceed();
+    }
+
+    /** 腿1 文本映射：clarifyLeg→澄清话术；否则克隆 context 跑图，按终态产文本。 */
+    private String leg1TextFor(PipelineContext context, String workflowIntent, boolean clarifyLeg) {
+        if (clarifyLeg) {
+            return clarifyMessage(workflowIntent); // 2b：无单号，腿1 降级为澄清话术
+        }
+        PipelineContext clone = new PipelineContext(context.traceId(), context.sessionId(), context.rawInput());
+        clone.setUserId(context.userId());
+        try {
+            AfterSaleWorkflow graph = "return_request".equals(workflowIntent) ? returnWorkflow : refundWorkflow;
+            AfterSaleWorkflowOutcome o = graph.invoke(clone);
+            if (o instanceof AfterSaleWorkflowOutcome.Approved a) {
+                return confirmationMessage(workflowIntent, clone.workflowResult(), a.orderStatus(), a.policyConclusion());
+            }
+            if (o instanceof AfterSaleWorkflowOutcome.Rejected r) {
+                return r.customerMessage();
+            }
+            return WORKFLOW_PENDING_TEXT; // Timeout / Denied
+        } catch (Exception e) {
+            log.warn("并发腿1 工作流失败，优雅话术：sessionId={} reason={}", context.sessionId(), e.getMessage());
+            return WORKFLOW_PENDING_TEXT;
+        }
     }
 
     /**

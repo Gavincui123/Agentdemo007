@@ -8,6 +8,7 @@ import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.prompt.LocalPromptSource;
 import com.agentdemo007.prompt.PromptTemplate;
+import com.agentdemo007.session.model.ChatMessage;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -422,5 +423,46 @@ class WorkflowExecutionStepTest {
         ctx.setRoutePlan(new RoutePlan(c, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, List.of()));
         s.process(ctx);
         assertThat(ctx.presetReply()).doesNotContain("请一并提供订单号"); // 已有单号不再要
+    }
+
+    // ---- T14：并发 fork-join 分支（4b：单号+workflow+secondary → 腿1图 Future + 腿2子管线）----
+
+    @Test
+    void process_concurrentLeg4b_setsConcurrentReply_withRefundFutureAndLeg2Prompt() throws Exception {
+        InMemoryPendingWorkflowStore store = new InMemoryPendingWorkflowStore();
+        InvokeCanary refund = new InvokeCanary(new AfterSaleWorkflowOutcome.Approved("auto"));
+        InvokeCanary ret = new InvokeCanary(new AfterSaleWorkflowOutcome.Approved("auto"));
+        SubPipelineRunner sub = subCtx -> List.of(new ChatMessage.System("leg2-prompt"));
+        WorkflowExecutionStep s = new WorkflowExecutionStep(refund.graph(), ret.graph(), store, null, Runnable::run, sub, new RoutePlanBaselines());
+
+        PipelineContext ctx = new PipelineContext("s1", "退款 ORD-001 想买耳机");
+        RoutePlanCandidate c = new RoutePlanCandidate(
+                "refund_request", true, true, List.of("get_order_detail"), List.of("after_sale_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, false, "product_query");
+        ctx.setRoutePlan(new RoutePlan(c, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, List.of()));
+        s.process(ctx);
+
+        assertThat(ctx.concurrentReply()).isNotNull();
+        assertThat(ctx.concurrentReply().leg1Text().get()).contains("退款"); // 直接执行器：Future 已完成
+        assertThat(ctx.concurrentReply().leg2Intent()).isEqualTo("product_query");
+        assertThat(store.get("s1")).isEmpty(); // 先 remove
+    }
+
+    @Test
+    void process_concurrentLeg1Timeout_mapsToGracefulText() throws Exception {
+        WorkflowExecutionStep s = new WorkflowExecutionStep(
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Timeout()).graph(),
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Approved("auto")).graph(),
+                PendingWorkflowStore.NO_OP, null, Runnable::run,
+                subCtx -> List.of(new ChatMessage.System("leg2")), new RoutePlanBaselines());
+        PipelineContext ctx = new PipelineContext("s1", "退款 ORD-001 想买耳机");
+        RoutePlanCandidate c = new RoutePlanCandidate(
+                "refund_request", true, true, List.of("get_order_detail"), List.of("after_sale_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, false, "product_query");
+        ctx.setRoutePlan(new RoutePlan(c, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, List.of()));
+        s.process(ctx);
+        assertThat(ctx.concurrentReply().leg1Text().get()).contains("审批中"); // 优雅话术，非 ShortCircuit
     }
 }
