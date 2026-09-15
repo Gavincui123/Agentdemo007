@@ -39,49 +39,54 @@ public class IntentConfig {
     private static final double CONFIDENCE_THRESHOLD = 0.6;
 
     /**
-     * 关键词规则引擎装配（配置化）。
+     * 关键词规则引擎装配（配置化 + 内置兜底合并）。
      *
-     * <p>{@code intent.keywords.rules} 非空 → 用配置<b>替换</b>内置默认（运维拥有完整关键词列表，
-     * 可经 Nacos 增删）；缺省/空 → 回落内置 11 条默认。注入模式 {@link InjectionPatternRule}
-     * 恒内置追加（安全：注入词表不应被随意增删）。
+     * <p><b>合并模式</b>（非替换）：内置默认关键词（含业务查询词）<b>始终保留</b>——配置关键词同字
+     * 覆盖内置（改意图/置信度），配置新增关键词追加。此前"配置非空→替换全部"会导致 Nacos 3 条
+     * 配置覆盖 18 条内置→"订单"丢失→LLM 误分类 STRUCTURED_EXTRACTION→siliconflow-large 35s。
+     * 合并后运维可增/改但不能意外删掉业务关键词。注入模式恒内置追加（安全：不配置化）。
      */
     @Bean
     RuleMatcher ruleMatcher(IntentKeywordProperties props) {
-        List<Rule> rules = new ArrayList<>();
+        // 1. 内置默认关键词（始终保留——业务关键词是性能兜底，配置不应意外删除）
+        java.util.Map<String, KeywordRule> builtins = new java.util.LinkedHashMap<>();
+        putBuiltin(builtins, "闲聊", Intent.CHIT_CHAT, 0.9);
+        putBuiltin(builtins, "你好", Intent.CHIT_CHAT, 0.85);
+        // 业务查询关键词 → CHIT_CHAT（小模型快回复）：工具/RAG 已取数据，小模型足够格式化回复；
+        // 不升 REASONING（大模型 35s 延迟）。退款/退货走工作流时 presetReply 短路不调 LLM，
+        // 认知意图仅决定非工作流路径（如"退款政策是什么"）的模型。
+        putBuiltin(builtins, "订单", Intent.CHIT_CHAT, 0.8);
+        putBuiltin(builtins, "物流", Intent.CHIT_CHAT, 0.8);
+        putBuiltin(builtins, "商品", Intent.CHIT_CHAT, 0.75);
+        putBuiltin(builtins, "退款", Intent.CHIT_CHAT, 0.75);
+        putBuiltin(builtins, "退货", Intent.CHIT_CHAT, 0.75);
+        putBuiltin(builtins, "优惠", Intent.CHIT_CHAT, 0.75);
+        putBuiltin(builtins, "促销", Intent.CHIT_CHAT, 0.75);
+        putBuiltin(builtins, "分析", Intent.REASONING, 0.9);
+        putBuiltin(builtins, "推理", Intent.REASONING, 0.9);
+        putBuiltin(builtins, "计算", Intent.REASONING, 0.85);
+        putBuiltin(builtins, "长文", Intent.LONG_CONTEXT, 0.9);
+        putBuiltin(builtins, "总结", Intent.LONG_CONTEXT, 0.85);
+        putBuiltin(builtins, "抽取", Intent.STRUCTURED_EXTRACTION, 0.9);
+        putBuiltin(builtins, "结构化", Intent.STRUCTURED_EXTRACTION, 0.9);
+        putBuiltin(builtins, "转人工", Intent.TRANSFER_TO_HUMAN, 0.95);
+        putBuiltin(builtins, "人工客服", Intent.TRANSFER_TO_HUMAN, 0.95);
+
+        // 2. 配置关键词合并：同字覆盖（改意图/置信度），新增追加
+        String source = "内置默认";
         List<IntentKeywordProperties.RuleDef> cfg = props.getRules();
-        String source;
         if (cfg != null && !cfg.isEmpty()) {
-            source = "配置覆盖默认";
+            source = "内置+配置合并";
             for (IntentKeywordProperties.RuleDef r : cfg) {
                 if (r.getKeyword() == null || r.getKeyword().isBlank() || r.getIntent() == null) {
-                    continue; // 跳过非法条目
+                    continue;
                 }
-                rules.add(new KeywordRule(r.getKeyword(), r.getIntent(), r.getConfidence()));
+                builtins.put(r.getKeyword().toLowerCase(java.util.Locale.ROOT),
+                        new KeywordRule(r.getKeyword(), r.getIntent(), r.getConfidence()));
             }
-        } else {
-            source = "内置默认";
-            rules.add(new KeywordRule("闲聊", Intent.CHIT_CHAT, 0.9));
-            rules.add(new KeywordRule("你好", Intent.CHIT_CHAT, 0.85));
-            // 业务查询关键词 → CHIT_CHAT（小模型快回复）：工具/RAG 已取数据，小模型足够格式化回复；
-            // 不升 REASONING（大模型 35s 延迟）。退款/退货走工作流时 presetReply 短路不调 LLM，
-            // 认知意图仅决定非工作流路径（如"退款政策是什么"）的模型。
-            rules.add(new KeywordRule("订单", Intent.CHIT_CHAT, 0.8));
-            rules.add(new KeywordRule("物流", Intent.CHIT_CHAT, 0.8));
-            rules.add(new KeywordRule("商品", Intent.CHIT_CHAT, 0.75));
-            rules.add(new KeywordRule("退款", Intent.CHIT_CHAT, 0.75));
-            rules.add(new KeywordRule("退货", Intent.CHIT_CHAT, 0.75));
-            rules.add(new KeywordRule("优惠", Intent.CHIT_CHAT, 0.75));
-            rules.add(new KeywordRule("促销", Intent.CHIT_CHAT, 0.75));
-            rules.add(new KeywordRule("分析", Intent.REASONING, 0.9));
-            rules.add(new KeywordRule("推理", Intent.REASONING, 0.9));
-            rules.add(new KeywordRule("计算", Intent.REASONING, 0.85));
-            rules.add(new KeywordRule("长文", Intent.LONG_CONTEXT, 0.9));
-            rules.add(new KeywordRule("总结", Intent.LONG_CONTEXT, 0.85));
-            rules.add(new KeywordRule("抽取", Intent.STRUCTURED_EXTRACTION, 0.9));
-            rules.add(new KeywordRule("结构化", Intent.STRUCTURED_EXTRACTION, 0.9));
-            rules.add(new KeywordRule("转人工", Intent.TRANSFER_TO_HUMAN, 0.95));
-            rules.add(new KeywordRule("人工客服", Intent.TRANSFER_TO_HUMAN, 0.95));
         }
+
+        List<Rule> rules = new ArrayList<>(builtins.values());
         int keywordCount = rules.size();
         // 注入模式规则（恒内置，不配置化——安全：注入词表不应被随意增删；零 LLM，§5.11）
         rules.add(new InjectionPatternRule(List.of(
@@ -90,6 +95,12 @@ public class IntentConfig {
         log.info("意图规则引擎已装配：{} 条规则（关键词 {} 条，{}；含注入模式）",
                 rules.size(), keywordCount, source);
         return new RuleMatcher(rules);
+    }
+
+    private static void putBuiltin(java.util.Map<String, KeywordRule> map,
+                                   String keyword, Intent intent, double confidence) {
+        map.put(keyword.toLowerCase(java.util.Locale.ROOT),
+                new KeywordRule(keyword, intent, confidence));
     }
 
     @Bean

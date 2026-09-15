@@ -9,9 +9,9 @@ import java.util.List;
  * {@code intent.keywords.*} 配置绑定（第三层·关键词前置分诊的配置化，Phase 7）。
  *
  * <p>把 Nacos/application.yml 的关键词规则绑定为 POJO，由 {@link IntentConfig} 翻成 {@code KeywordRule}。
- * 配置 {@code rules} 非空时<b>替换</b>内置默认关键词表（运维拥有完整关键词列表）；缺省/空时回落
- * 内置 11 条默认（闲聊/推理/长文/结构化/转人工）。注入模式 {@code InjectionPatternRule} 恒内置、
- * 不配置化（安全：注入词表不应被随意增删）。
+ * 配置 {@code rules} 与内置默认<b>合并</b>（非替换）：同字覆盖（改意图/置信度），新增追加；
+ * 缺省/空时仅用内置默认。内置业务关键词（订单/物流/退款等）始终保留——配置不应意外删除。
+ * 注入模式 {@code InjectionPatternRule} 恒内置、不配置化（安全：注入词表不应被随意增删）。
  *
  * <pre>
  * intent:

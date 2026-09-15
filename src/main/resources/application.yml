@@ -166,7 +166,7 @@ llm:
 #         confidence: 0.95
 intent:
   keywords:
-    rules: []  # 空=用内置 11 条默认关键词；填入即替换默认
+    rules: []  # 空=用内置默认关键词；填入即合并（同字覆盖、新增追加；内置业务词始终保留）
 
 # ---- Phase 21 稠密嵌入（主备容灾，OpenAI 兼容 /v1/embeddings）----
 # embedding.enabled=false/缺省 → dev HashEmbeddingService（假向量，不调 API；混合检索稠密通道占位）；

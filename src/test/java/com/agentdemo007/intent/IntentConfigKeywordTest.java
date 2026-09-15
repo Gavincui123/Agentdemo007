@@ -10,8 +10,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 关键词配置化装配测试（Phase 7·{@link IntentConfig#ruleMatcher}）。
  *
- * <p>验证关键词表的配置契约：配置 {@code rules} 非空→替换内置默认（运维拥有完整列表）；
- * 缺省/空→回落内置 11 条默认。注入模式恒内置（不配置化）。
+ * <p>验证关键词表的配置契约：<b>合并模式</b>——内置默认（含业务查询词）始终保留；
+ * 配置 {@code rules} 非空→同字覆盖（改意图/置信度）、新增追加。注入模式恒内置（不配置化）。
  */
 class IntentConfigKeywordTest {
 
@@ -31,7 +31,7 @@ class IntentConfigKeywordTest {
     }
 
     @Test
-    void configRules_replaceDefaults() {
+    void configRules_mergeWithBuiltins() {
         IntentKeywordProperties props = new IntentKeywordProperties();
         IntentKeywordProperties.RuleDef r = new IntentKeywordProperties.RuleDef();
         r.setKeyword("嗨");
@@ -41,12 +41,14 @@ class IntentConfigKeywordTest {
 
         RuleMatcher matcher = config.ruleMatcher(props);
 
-        // 配置词命中
+        // 配置新增词命中
         assertThat(matcher.match("嗨", List.of()))
                 .hasValueSatisfying(c -> assertThat(c.intent()).isEqualTo(Intent.CHIT_CHAT));
-        // 默认词已被替换（不再命中）——配置=完整列表，非追加
-        assertThat(matcher.match("你好", List.of())).isEmpty();
-        assertThat(matcher.match("分析", List.of())).isEmpty();
+        // 内置默认词仍命中（合并非替换——业务关键词不应被配置意外删除）
+        assertThat(matcher.match("你好", List.of()))
+                .hasValueSatisfying(c -> assertThat(c.intent()).isEqualTo(Intent.CHIT_CHAT));
+        assertThat(matcher.match("分析", List.of()))
+                .hasValueSatisfying(c -> assertThat(c.intent()).isEqualTo(Intent.REASONING));
     }
 
     @Test
