@@ -115,7 +115,7 @@ public class WorkflowExecutionStep implements PipelineStep {
     public WorkflowExecutionStep(@Qualifier("refundAfterSaleWorkflow") AfterSaleWorkflow refundWorkflow,
                                  @Qualifier("returnAfterSaleWorkflow") AfterSaleWorkflow returnWorkflow,
                                  PendingWorkflowStore pendingStore, PromptRegistry promptRegistry,
-                                 Executor executor, SubPipelineRunner subPipelineRunner,
+                                 @Qualifier("workflowTaskExecutor") Executor executor, SubPipelineRunner subPipelineRunner,
                                  RoutePlanBaselines baselines) {
         this.refundWorkflow = refundWorkflow;
         this.returnWorkflow = returnWorkflow;

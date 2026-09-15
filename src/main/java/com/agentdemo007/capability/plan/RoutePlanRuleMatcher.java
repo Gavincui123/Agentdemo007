@@ -8,7 +8,7 @@ import java.util.List;
  * <p>route_model 产出的 {@link RoutePlanCandidate} 经本层 5 政策约束收敛（required_entity_gate
  * 待实体抽取，⑦后接入，本切片 5 项）：
  * <ol>
- *   <li><b>structured_candidate_validated</b> — 委托 {@link RoutePlanContractValidator} 4 跨字段约束，
+ *   <li><b>structured_candidate_validated</b> — 委托 {@link RoutePlanContractValidator} 5 跨字段约束，
  *       不过 → {@code invalid_model_route_candidate} 兜底；</li>
  *   <li><b>tool_allowlist</b> — candidate.requiredTools ⊆ baseline.requiredTools
  *       （不发明工具，违→{@code tool_allowlist_violation}）；</li>
