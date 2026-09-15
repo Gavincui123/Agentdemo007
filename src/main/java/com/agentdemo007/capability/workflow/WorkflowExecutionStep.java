@@ -171,9 +171,7 @@ public class WorkflowExecutionStep implements PipelineStep {
                 return new StepOutcome.Proceed();
             }
             if (outcome instanceof AfterSaleWorkflowOutcome.Approved a) {
-                // T9 适配：Approved 当前仅 approver 字段（orderStatus/policyConclusion 是 Task 11 才加），
-                // 此处传 null/null；T11 补齐字段后改为 a.orderStatus(), a.policyConclusion()。
-                context.setPresetReply(confirmationMessage(intent, context.workflowResult(), null, null));
+                context.setPresetReply(confirmationMessage(intent, context.workflowResult(), a.orderStatus(), a.policyConclusion()));
                 return new StepOutcome.Proceed();
             }
             if (outcome instanceof AfterSaleWorkflowOutcome.Timeout) {

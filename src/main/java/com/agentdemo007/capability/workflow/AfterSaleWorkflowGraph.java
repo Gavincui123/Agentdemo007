@@ -195,8 +195,12 @@ public class AfterSaleWorkflowGraph implements AfterSaleWorkflow {
 
         graph.addNode(APPROVAL_NODE, AsyncNodeAction.node_async(state -> {
             PipelineContext ctx = requireContext(state);
+            Optional<OrderRecord> orderOpt = state.<Optional<OrderRecord>>value(ORDER_KEY).orElse(Optional.empty());
+            Optional<PolicyFragment> policyOpt = state.<PolicyFragment>value(POLICY_KEY);
+            String orderStatus = orderOpt.map(OrderRecord::status).orElse(null);
+            String policyConclusion = policyOpt.map(PolicyFragment::text).orElse(null);
             WorkflowApprovalDecision.Outcome ao = approvalDecision.await(ctx.workflowResult());
-            AfterSaleWorkflowOutcome outcome = translate(ao);
+            AfterSaleWorkflowOutcome outcome = translate(ao, orderStatus, policyConclusion);
             return Map.of(APPROVAL_KEY, ao, OUTCOME_KEY, outcome);
         }));
 
@@ -240,10 +244,10 @@ public class AfterSaleWorkflowGraph implements AfterSaleWorkflow {
         return graph;
     }
 
-    /** 翻译审批终态 → 售后工作流终态（Approved/Denied/Timeout 三态对齐）。 */
-    private AfterSaleWorkflowOutcome translate(WorkflowApprovalDecision.Outcome ao) {
+    /** 翻译审批终态 → 售后工作流终态（Approved/Denied/Timeout 三态对齐），富集订单状态+政策结论。 */
+    private AfterSaleWorkflowOutcome translate(WorkflowApprovalDecision.Outcome ao, String orderStatus, String policyConclusion) {
         if (ao instanceof WorkflowApprovalDecision.Approved a) {
-            return new AfterSaleWorkflowOutcome.Approved(a.approver());
+            return new AfterSaleWorkflowOutcome.Approved(a.approver(), orderStatus, policyConclusion);
         }
         if (ao instanceof WorkflowApprovalDecision.Denied d) {
             return new AfterSaleWorkflowOutcome.Denied(d.reason());

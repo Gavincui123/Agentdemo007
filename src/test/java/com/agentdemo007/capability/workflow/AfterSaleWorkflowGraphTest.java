@@ -222,4 +222,12 @@ class AfterSaleWorkflowGraphTest {
         assertThat(AfterSaleWorkflowGraph.extractOrderIdFrom("退款 ord-001")).isEqualTo("ord-001");
         assertThat(AfterSaleWorkflowGraph.extractOrderIdFrom("退款 ORD-001")).isEqualTo("ORD-001");
     }
+
+    @Test
+    void approved_carriesOrderStatusAndPolicyConclusion() {
+        AfterSaleWorkflowOutcome.Approved a = new AfterSaleWorkflowOutcome.Approved("auto", "已发货", "满足退款政策");
+        assertThat(a.orderStatus()).isEqualTo("已发货");
+        assertThat(a.policyConclusion()).isEqualTo("满足退款政策");
+        assertThat(new AfterSaleWorkflowOutcome.Approved("auto").orderStatus()).isNull(); // 兼容构造
+    }
 }
