@@ -212,6 +212,13 @@ agentdemo:
 app:
   model-selector:
     strategy: ${MODEL_SELECTOR_STRATEGY:tag}
+  # ---- 提示词源（[[q1-nacos-prompt-mgmt]]）：local/缺省→LocalPromptSource 内存源（dev）；
+  #       nacos→PromptSourceConfig 装配 NacosPromptSource（经 AiService 拉取 + md5 gRPC 热推），
+  #       复用 spring.nacos.config.* 连接参数。promptKey：system-anchor（系统提示词）、
+  #       clarify-return/clarify-refund（澄清话术）——Nacos 控制台「AI 资源→提示词模板」按 key 建；
+  #       缺 key/Nacos 不可达→②降级回退硬编码默认，不阻塞 context。----
+  prompt:
+    source: ${PROMPT_SOURCE:local}
   # ---- 会话缓存：app.redis.enabled=true→真实 Redis（spring.data.redis.* 连接）；false→内存兜底 ----
   redis:
     enabled: ${REDIS_ENABLED:false}
@@ -244,3 +251,10 @@ app:
   # ---- Phase 14 LangGraph 死循环护栏：单请求最大迭代次数（§5.13 兜底，图模式生效）----
   langgraph:
     max-iterations: ${LANGGRAPH_MAX_ITERATIONS:25}
+  # ---- [[business-tools-workflow-dag]] 高风险固定工作流：enabled=true→装配 6 节点 AfterSaleWorkflowGraph
+  #       + WorkflowExecutionStep@670（entity-gate 澄清 + 终态收口 + 状态机续跑/切换/放弃）；
+  #       缺省 false→不装配，@670 槽空，旧链线性等价（RagStep→ContextBuilder 不变）。
+  #       dev 跑真售后 2 轮流：WORKFLOW_ENABLED=true（+ LLM_ENABLED=true + SF_KEY 真路由）；
+  #       mock 数据对齐演示用户 10086/gold（ORD-001/002 归 10086、ORD-003 归 10010）。
+  workflow:
+    enabled: ${WORKFLOW_ENABLED:false}
