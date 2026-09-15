@@ -386,4 +386,41 @@ class WorkflowExecutionStepTest {
         assertThat(refund.count.get()).isZero();
         assertThat(store.get("s1")).isEmpty();
     }
+
+    // ---- T10：clarify-ambiguous 模板 + registry（菜单式澄清 + 订单号提示）----
+
+    @Test
+    void process_ambiguous_clarifiesWithMenuAndOrderHint_whenNoOrderId() {
+        InMemoryPendingWorkflowStore store = new InMemoryPendingWorkflowStore();
+        store.put("s1", new PendingWorkflow("return_request"));
+        WorkflowExecutionStep s = new WorkflowExecutionStep(
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Approved("auto")).graph(),
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Approved("auto")).graph(), store, null);
+
+        PipelineContext ctx = new PipelineContext("s1", "退款还是退货");
+        RoutePlanCandidate c = new RoutePlanCandidate(
+                "return_request", true, true, List.of("get_order_detail"), List.of("received_return_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, true, null);
+        ctx.setRoutePlan(new RoutePlan(c, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, List.of()));
+        s.process(ctx);
+
+        assertThat(ctx.presetReply()).contains("退款").contains("退货").contains("订单号"); // 菜单 + 要单号
+        assertThat(store.get("s1")).isPresent(); // pending 保留
+    }
+
+    @Test
+    void process_ambiguous_withOrderId_doesNotAskForOrderId() {
+        WorkflowExecutionStep s = new WorkflowExecutionStep(
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Approved("auto")).graph(),
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Approved("auto")).graph());
+        PipelineContext ctx = new PipelineContext("s1", "ORD-001 退款还是退货");
+        RoutePlanCandidate c = new RoutePlanCandidate(
+                "return_request", true, true, List.of("get_order_detail"), List.of("received_return_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, true, null);
+        ctx.setRoutePlan(new RoutePlan(c, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, List.of()));
+        s.process(ctx);
+        assertThat(ctx.presetReply()).doesNotContain("请一并提供订单号"); // 已有单号不再要
+    }
 }
