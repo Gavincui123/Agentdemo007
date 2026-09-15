@@ -62,6 +62,16 @@ public class IntentConfig {
             source = "内置默认";
             rules.add(new KeywordRule("闲聊", Intent.CHIT_CHAT, 0.9));
             rules.add(new KeywordRule("你好", Intent.CHIT_CHAT, 0.85));
+            // 业务查询关键词 → CHIT_CHAT（小模型快回复）：工具/RAG 已取数据，小模型足够格式化回复；
+            // 不升 REASONING（大模型 35s 延迟）。退款/退货走工作流时 presetReply 短路不调 LLM，
+            // 认知意图仅决定非工作流路径（如"退款政策是什么"）的模型。
+            rules.add(new KeywordRule("订单", Intent.CHIT_CHAT, 0.8));
+            rules.add(new KeywordRule("物流", Intent.CHIT_CHAT, 0.8));
+            rules.add(new KeywordRule("商品", Intent.CHIT_CHAT, 0.75));
+            rules.add(new KeywordRule("退款", Intent.CHIT_CHAT, 0.75));
+            rules.add(new KeywordRule("退货", Intent.CHIT_CHAT, 0.75));
+            rules.add(new KeywordRule("优惠", Intent.CHIT_CHAT, 0.75));
+            rules.add(new KeywordRule("促销", Intent.CHIT_CHAT, 0.75));
             rules.add(new KeywordRule("分析", Intent.REASONING, 0.9));
             rules.add(new KeywordRule("推理", Intent.REASONING, 0.9));
             rules.add(new KeywordRule("计算", Intent.REASONING, 0.85));

@@ -237,6 +237,36 @@ class OutputStepTest {
         assertThat(c.finalReply()).isEqualTo("阻塞兜底回复"); // onError→回退阻塞 chatRaw（保主备容灾）
     }
 
+    @Test
+    void streamAsync_latchWaitsForCompletion_avoidsConcurrentBlockingFallback() {
+        // 模拟 LC4j OpenAiStreamingChatModel.doChat 异步：回调在另一线程延迟触发。
+        // 修前：chatRawStream 返回时 holder 仍 null→误回退阻塞 chatRaw→双路并发+SSE 已 complete 后
+        // 仍收流式 token→数百 "already completed" 警告。修后：CountDownLatch 等回调完成再判退路。
+        CapturingExecutor asyncExec = new CapturingExecutor() {
+            @Override
+            public void stream(LlmRequest request, StreamingReplyHandler handler) {
+                new Thread(() -> {
+                    try { Thread.sleep(50); } catch (InterruptedException e) { return; }
+                    handler.onPartialResponse("异步");
+                    handler.onPartialResponse("回复");
+                    handler.onCompleteResponse("异步回复", 3);
+                }).start();
+            }
+        };
+        asyncExec.next = new LlmResponse("m1", "不该走的阻塞 fallback", 5);
+        OutputStep step = new OutputStep(service(asyncExec, singleModel()), gateway, securityFilter,
+                OutputSchemaResolver.lenient(), ReAsk.none());
+        List<ProgressEvent> emitted = new ArrayList<>();
+        PipelineContext c = ctx(Intent.CHIT_CHAT, "你好");
+        c.setEmitter(emitted::add);
+
+        StepOutcome out = step.process(c);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(c.finalReply()).isEqualTo("异步回复"); // 用流式结果，非阻塞 fallback
+        assertThat(emitted).hasSize(2); // 2 个 TokenChunk
+    }
+
     /** 辅助：执行 step 并返回 context.finalReply（用于 normalReply 用例的二次断言）。 */
     private String step_process_finalReply(PipelineContext c, OutputStep step) {
         step.process(c);

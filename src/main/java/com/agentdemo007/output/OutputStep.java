@@ -19,6 +19,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
@@ -48,6 +49,8 @@ public class OutputStep implements PipelineStep {
     private static final String LEG2_GRACEFUL_TEXT = "目前暂未找到您想要的商品，您可以浏览店内其他商品或告诉我更多偏好。";
     /** 并发腿1 await 超时（秒，§7.5）。 */
     private static final long LEG1_AWAIT_TIMEOUT_SECONDS = 30L;
+    /** 流式 await 超时（秒）：等 LC4j doChat 异步回调完成再判退路（防误回退阻塞→双路并发）。 */
+    private static final long STREAMING_AWAIT_SECONDS = 60L;
 
     private final ChatLlmService llmService;
     private final StructuredOutputGateway gateway;
@@ -94,10 +97,16 @@ public class OutputStep implements PipelineStep {
         // emitter 发 TokenChunk→reply_chunk SSE 实时 flush；onComplete 写 finalReply。流式跳 Schema 校验
         // （自由文本回复；结构化抽取仍走下面阻塞路径含 Schema/reAsk）；onError/异常→落下面阻塞 fallback
         // （chatRaw 主备容灾 + Schema 校验），韧性不丢。
+        //
+        // ⚠️ LC4j OpenAiStreamingChatModel.doChat 用 sendAsync（非阻塞），chatRawStream 返回时流式
+        // 尚未完成——须 CountDownLatch 等 onComplete/onError 回调后再判退路，否则 holder 仍 null→
+        // 误回退阻塞 chatRaw→两路 LLM 并发（SSE emitter 已 complete 后仍收流式 token→数百 "already
+        // completed" 警告）。同步调用时 latch 已 countDown→await 即返回（无额外等待）。
         ProgressEmitter emitter = context.emitter();
         if (emitter != null && emitter != ProgressEmitter.NO_OP) {
             String[] finalReplyHolder = {null};
             boolean[] errored = {false};
+            CountDownLatch latch = new CountDownLatch(1);
             StreamingReplyHandler handler = new StreamingReplyHandler() {
                 @Override
                 public void onPartialResponse(String token) {
@@ -106,16 +115,26 @@ public class OutputStep implements PipelineStep {
                 @Override
                 public void onCompleteResponse(String fullReply, int tokens) {
                     finalReplyHolder[0] = fullReply;
+                    latch.countDown();
                 }
                 @Override
                 public void onError(Throwable error) {
                     errored[0] = true;
                     log.warn("流式生成失败，回退阻塞 chatRaw：sessionId={} reason={}",
                             context.sessionId(), error.getMessage());
+                    latch.countDown();
                 }
             };
             try {
                 llmService.chatRawStream(prompt, context.intent(), handler);
+                if (!latch.await(STREAMING_AWAIT_SECONDS, TimeUnit.SECONDS)) {
+                    errored[0] = true;
+                    log.warn("流式超时（{}s），回退阻塞 chatRaw：sessionId={}",
+                            STREAMING_AWAIT_SECONDS, context.sessionId());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                errored[0] = true;
             } catch (Exception e) {
                 errored[0] = true;
                 log.warn("流式异常，回退阻塞 chatRaw：sessionId={} reason={}",
