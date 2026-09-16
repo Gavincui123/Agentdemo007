@@ -24,7 +24,6 @@ import com.agentdemo007.gateway.llm.ChatLlmService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -81,10 +80,13 @@ public class GatewayConfig {
 
     // ---- 提示词注册中心：dev 本地源（prod 由 NacosPromptSource + AiService 覆盖，待鉴权/真实 Nacos 接入） ----
 
+    // ---- 提示词注册中心：dev 本地源（[[q1-nacos-prompt-mgmt]] app.prompt.source=local/缺省）；
+    //       prod/nacos 由 PromptSourceConfig 装配 NacosPromptSource（@ConditionalOnProperty nacos 互斥）。
+
     @Bean
-    @ConditionalOnMissingBean(PromptRegistry.class)
+    @ConditionalOnProperty(name = "app.prompt.source", havingValue = "local", matchIfMissing = true)
     PromptRegistry promptRegistry() {
-        log.info("未配置提示词源，使用本地内存源（dev；prod 应装配 NacosPromptSource）");
+        log.info("app.prompt.source=local/缺省：使用本地内存提示词源（dev；prod 设 app.prompt.source=nacos 装配 NacosPromptSource）");
         return new LocalPromptSource();
     }
 
@@ -107,7 +109,10 @@ public class GatewayConfig {
 
     @Bean
     RetryPolicy retryPolicy() {
-        return RetryPolicy.defaults();
+        // noRetry：同模型不重试，超时/故障后立即按候选序切备。依据：同模型重试对"挂起"类故障
+        // 是纯放大（实测 3×20s=60s 才切备，而备选 provider 1.2s 即成功）；且主备本就是完整健康的
+        // provider，重试的价值被故障转移覆盖。单次挂起损失从 60s 降到 llm.timeout（20s）。
+        return RetryPolicy.noRetry();
     }
 
     @Bean

@@ -2,6 +2,7 @@ package com.agentdemo007.gateway.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,7 @@ public class LlmProperties {
     private List<Provider> providers = new ArrayList<>();
     private CircuitBreaker circuitBreaker = new CircuitBreaker();
     private Thinking thinking = new Thinking();
+    private Duration timeout = Duration.ofSeconds(20);
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -53,6 +55,21 @@ public class LlmProperties {
     public List<Provider> getProviders() { return providers; }
     public void setProviders(List<Provider> providers) {
         this.providers = providers == null ? new ArrayList<>() : providers;
+    }
+
+    /**
+     * 单次 LLM HTTP 调用超时（{@code llm.timeout}，默认 20s）。
+     *
+     * <p>超时预算治理：须显著小于 SSE 异步超时 {@code app.sse.timeout-ms}（默认 120s）——
+     * 单次超时吃满 SSE 窗口会导致超时兜底话术来不及发（容器先掐断连接）。超时后由网关层
+     * （ResilientExecutor 同模型退避 + FailoverExecutor 主备转移 + 熔断）统一重试/降级，
+     * LC4j 内部重试已关闭（{@code maxRetries=0}），不再叠加放大延迟。20s 依据：关思考后
+     * 各调用实测 0.6~2.8s，20s=7~30 倍余量；实测 provider 间歇挂起时阈值越低单次损失越小。
+     */
+    public Duration getTimeout() { return timeout; }
+    public void setTimeout(Duration timeout) {
+        this.timeout = (timeout == null || timeout.isNegative() || timeout.isZero())
+                ? Duration.ofSeconds(20) : timeout;
     }
 
     public CircuitBreaker getCircuitBreaker() { return circuitBreaker; }

@@ -3,14 +3,17 @@ package com.agentdemo007.gateway.llm;
 import com.agentdemo007.gateway.core.LlmRequest;
 import com.agentdemo007.gateway.core.LlmResponse;
 import com.agentdemo007.gateway.core.ModelExecutor;
+import com.agentdemo007.gateway.core.StreamingReplyHandler;
 import com.agentdemo007.gateway.exception.LlmUnavailableException;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.http.client.HttpClientBuilder;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiChatRequestParameters;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 
 import java.time.Duration;
 import java.util.List;
@@ -81,7 +84,11 @@ public class LangChain4jModelExecutor implements ModelExecutor {
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .modelName(request.modelId())
-                .timeout(timeout != null ? timeout : Duration.ofSeconds(60));
+                .timeout(timeout != null ? timeout : Duration.ofSeconds(60))
+                // LC4j 内部盲重试（默认 2 次、不退避、不感知熔断/SSE 预算）关闭——重试/转移归网关层
+                // （ResilientExecutor 同模型退避 + FailoverExecutor 主备切换）。实测事故：120s 超时 ×
+                // LC4j 3 次尝试把单次逻辑调用放大到 121s+，吃满 SSE 窗口后连接被掐、兜底话术发不出去。
+                .maxRetries(0);
         if (request.maxTokens() > 0) {
             b.maxTokens(request.maxTokens());
         }
@@ -130,5 +137,70 @@ public class LangChain4jModelExecutor implements ModelExecutor {
         }
         return new LlmResponse(request.modelId(), content != null ? content : "", tokens,
                 toolCalls != null ? toolCalls : List.of());
+    }
+
+    /**
+     * 流式执行（[[q2-token-streaming]]）：建 {@link OpenAiStreamingChatModel}（镜像 {@link #execute} 建
+     * {@link OpenAiChatModel} 的翻译：baseUrl/apiKey/modelName/timeout/maxTokens/disableThinking→customParameters
+     * + httpClientBuilder seam），{@code doChat(ChatRequest, lc4jHandler)} 逐 token 回调。
+     *
+     * <p>把引擎无关 {@link StreamingReplyHandler} 适配成 LC4j {@link StreamingChatResponseHandler}
+     * （onPartialResponse(String)→逐 token；onCompleteResponse(ChatResponse)→全文+tokens；onError→透传）。
+     * 流式<b>主模型 only、无中途故障转移</b>（{@link com.agentdemo007.gateway.llm.ChatLlmService#chatRawStream}
+     * 不经 FailoverExecutor）；onError→调用方 OutputStep 回退阻塞 chatRaw。空 key→抛 LlmUnavailable（同步→onError）。
+     */
+    @Override
+    public void stream(LlmRequest request, StreamingReplyHandler handler) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new LlmUnavailableException("LLM api-key 未配置（baseUrl=" + baseUrl + "）", null);
+        }
+        OpenAiStreamingChatModel.OpenAiStreamingChatModelBuilder b = OpenAiStreamingChatModel.builder()
+                .baseUrl(baseUrl).apiKey(apiKey).modelName(request.modelId())
+                .timeout(timeout != null ? timeout : Duration.ofSeconds(60));
+        if (httpClientBuilder != null) {
+            b.httpClientBuilder(httpClientBuilder);
+        }
+        OpenAiStreamingChatModel model = b.build();
+
+        // per-request OpenAiChatRequestParameters（修 ClassCast + 坑②）：OpenAiStreamingChatModel.doChat 强转
+        // ChatRequest.parameters()→OpenAiChatRequestParameters，故不能 ChatRequest.builder().messages().build()
+        // （产 DefaultChatRequestParameters→ClassCastException，用户实测报"流式失败回退阻塞"——doChat:149）。
+        // 且 per-request params 覆盖 model defaultRequestParameters（坑②坐实：OpenAiChatModelBodyCaptureTest
+        // clientA 缺 modelName→body 缺 model→SF 20015；clientC 带 modelName→body 有 model）→须自包含：
+        // modelName（否则 body 缺 model）+ maxOutputTokens（否则 max_tokens 丢）+ customParameters（关思考）。
+        OpenAiChatRequestParameters.Builder paramsB = OpenAiChatRequestParameters.builder()
+                .modelName(request.modelId());
+        if (request.maxTokens() > 0) {
+            paramsB.maxOutputTokens(request.maxTokens());
+        }
+        if (request.disableThinking() && !disableThinkingParams.isEmpty()) {
+            paramsB.customParameters(disableThinkingParams);
+        }
+        OpenAiChatRequestParameters params = paramsB.build();
+
+        ChatRequest.Builder chatReqB = ChatRequest.builder().parameters(params);
+        if (request.messages() != null && !request.messages().isEmpty()) {
+            chatReqB.messages(request.messages());
+        } else {
+            chatReqB.messages(new UserMessage(request.prompt()));
+        }
+        model.doChat(chatReqB.build(), new StreamingChatResponseHandler() {
+            @Override
+            public void onPartialResponse(String token) {
+                handler.onPartialResponse(token);
+            }
+            @Override
+            public void onCompleteResponse(ChatResponse completeResponse) {
+                String content = completeResponse.aiMessage().text();
+                int tokens = (completeResponse.tokenUsage() != null
+                        && completeResponse.tokenUsage().totalTokenCount() != null)
+                        ? completeResponse.tokenUsage().totalTokenCount() : 0;
+                handler.onCompleteResponse(content != null ? content : "", tokens);
+            }
+            @Override
+            public void onError(Throwable error) {
+                handler.onError(error);
+            }
+        });
     }
 }

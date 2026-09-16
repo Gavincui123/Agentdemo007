@@ -2,10 +2,12 @@ import { http } from './http'
 import { streamChat, type SseHandlers } from '../utils/sse'
 
 /**
- * 对话响应数据体——与后端 {@code ChatResponse(sessionId, reply, degraded, scenario)} 同形。
+ * 对话响应数据体——与后端 {@code ChatResponse(sessionId, reply, degraded, scenario, citations, totalMs, firstTokenMs)} 同形。
  *
  * <p>{@code POST /chat} 经 {@link http} 拦截器解包 UnifiedResponse 后得本类型；
  * {@code /chat/stream} 的 SSE {@code data:} 行直接携带本类型 JSON（不经 UnifiedResponse 包裹）。
+ * {@code totalMs} = 后端收到请求→终端回复就绪（毫秒）；{@code firstTokenMs} = 首个流式 token
+ * 耗时（同步接口与超时兜底为 null）。
  */
 export interface ChatResponse {
   sessionId: string | null
@@ -13,6 +15,8 @@ export interface ChatResponse {
   degraded: boolean
   scenario: string | null
   citations: string[]
+  totalMs?: number | null
+  firstTokenMs?: number | null
 }
 
 /** 解析 SSE data 载荷为 {@link ChatResponse}；非 JSON 或缺 reply 返回 null。 */
@@ -28,6 +32,8 @@ export function parseChatResponse(data: string): ChatResponse | null {
       citations: Array.isArray(obj.citations)
         ? obj.citations.filter((c): c is string => typeof c === 'string')
         : [],
+      totalMs: typeof obj.totalMs === 'number' ? obj.totalMs : null,
+      firstTokenMs: typeof obj.firstTokenMs === 'number' ? obj.firstTokenMs : null,
     }
   } catch {
     return null

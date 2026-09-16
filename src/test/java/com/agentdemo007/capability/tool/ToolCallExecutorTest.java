@@ -31,9 +31,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 证 {@link ToolCallExecutor}（② Slice 3·option A 数据步·替手撸 ToolExecutor 角色）：单次前向
  * {@link GatewayChatModel#doChat}（messages=[query] + tools=specs）→ 模型出 {@code tool_calls} 则经
- * {@link ResilientToolExecutor}（包 {@link DefaultToolExecutor}）执行真 {@code @Tool} → 返回结果列表；
- * 无 {@code tool_calls} → 空。breaker OPEN → 透传 {@link ToolCircuitOpenException}（交 {@code ToolExecutionStep}
- * 收口 {@code TOOL_FAILURE}）。
+ * {@link ResilientToolExecutor}（包 {@link DefaultToolExecutor}）执行真 {@code @Tool} → 返回结构化结果
+ * （{@link ToolCallResult}，带 category，[[business-tools-workflow-dag]] §2.2）；无 {@code tool_calls} → 空。
+ * breaker OPEN → 透传 {@link ToolCircuitOpenException}（交 {@code ToolExecutionStep} 收口 {@code TOOL_FAILURE}）。
  *
  * <p>退役手撸 Detector/ParamParser/SchemaValidator/Reparser：模型直接出结构化 {@code tool_calls}（含 JSON 参数），
  * 无关键词检测/手解析/手校验/重解析循环——schema 由 {@code @Tool} 注解经
@@ -80,7 +80,8 @@ class ToolCallExecutorTest {
                 new com.agentdemo007.gateway.core.FailoverExecutor());
         // 韧性装饰：ResilientToolExecutor 包 DefaultToolExecutor（证真派发原语执行真 @Tool 算出 6）
         ToolExecutor resilient = new ResilientToolExecutor(new DefaultToolExecutor(tool, method), breaker);
-        return new ToolCallExecutor(null, null, 512, List.of(spec), Map.of(spec.name(), resilient)) {
+        // categoryMap 空 → triangleArea 经 getOrDefault 默认 COMPUTE（[[business-tools-workflow-dag]] §2.2）
+        return new ToolCallExecutor(null, null, 512, List.of(spec), Map.of(spec.name(), resilient), Map.of()) {
             @Override
             protected GatewayChatModel buildChatModel() {
                 return new GatewayChatModel(gateway, "test-small", 512,
@@ -98,10 +99,13 @@ class ToolCallExecutorTest {
                 .name(spec.name()).arguments("{\"base\":3,\"height\":4}").build();
         LlmResponse canned = new LlmResponse("test-small", null, 5, List.of(call));
 
-        List<String> results = executorWith(canned, breaker, spec, tool).execute("底3高4的三角形面积");
+        List<ToolCallResult> results = executorWith(canned, breaker, spec, tool).execute("底3高4的三角形面积");
 
         // 真派发原语（DefaultToolExecutor）+ 真 @Tool 算出 6，经网关栈单次前向
-        assertThat(results).containsExactly("6");
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).content()).isEqualTo("6");
+        // triangleArea 无 @ToolChannel → COMPUTE 默认（[[business-tools-workflow-dag]] §2.2）
+        assertThat(results.get(0).category()).isEqualTo(ToolCategory.COMPUTE);
         // 韧性记账不跳闸（工具成功 → recordSuccess）
         assertThat(breaker.state(spec.name())).isEqualTo(CircuitBreaker.State.CLOSED);
     }
@@ -114,7 +118,7 @@ class ToolCallExecutorTest {
         // 模型纯文本回复（无 tool_calls）→ 无工具触发 → 空（交下游正常对话）
         LlmResponse canned = new LlmResponse("test-small", "这个问题不需要工具", 8, List.of());
 
-        List<String> results = executorWith(canned, breaker, spec, tool).execute("你好");
+        List<ToolCallResult> results = executorWith(canned, breaker, spec, tool).execute("你好");
 
         assertThat(results).isEmpty();
     }
@@ -147,9 +151,9 @@ class ToolCallExecutorTest {
         ToolExecutor resilient = new ResilientToolExecutor(new DefaultToolExecutor(tool, method), breaker);
         ModelConfigCenter emptyCenter = new ModelConfigCenter(() -> null, new ModelRegistry());
         ToolCallExecutor executor = new ToolCallExecutor(null, emptyCenter, 512,
-                List.of(spec), Map.of(spec.name(), resilient));
+                List.of(spec), Map.of(spec.name(), resilient), Map.of());
 
-        List<String> results = executor.execute("底3高4的三角形面积");
+        List<ToolCallResult> results = executor.execute("底3高4的三角形面积");
 
         assertThat(results).isEmpty();
     }

@@ -24,8 +24,13 @@ public class ContextConfig {
     }
 
     @Bean
-    SystemAnchorLayer systemAnchorLayer(PromptRegistry registry, Clock clock) {
-        return new SystemAnchorLayer(registry, clock);
+    SystemPromptAssembler systemPromptAssembler(PromptRegistry registry) {
+        return new SystemPromptAssembler(registry, SystemAnchorLayer.DEFAULT_SYSTEM_PROMPT);
+    }
+
+    @Bean
+    SystemAnchorLayer systemAnchorLayer(SystemPromptAssembler assembler, Clock clock) {
+        return new SystemAnchorLayer(assembler, clock);
     }
 
     @Bean

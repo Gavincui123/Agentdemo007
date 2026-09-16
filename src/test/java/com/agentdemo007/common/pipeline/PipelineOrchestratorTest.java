@@ -7,6 +7,8 @@ import com.agentdemo007.capability.rag.RetrievalValidator;
 import com.agentdemo007.capability.rag.Retriever;
 import com.agentdemo007.common.degradation.DegradationPhraseCenter;
 import com.agentdemo007.common.degradation.DegradationScenario;
+import com.agentdemo007.common.progress.ProgressEmitter;
+import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.intent.Intent;
 import com.agentdemo007.intent.IntentClassifier;
 import com.agentdemo007.intent.KeywordTriageStep;
@@ -19,6 +21,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -257,6 +260,82 @@ class PipelineOrchestratorTest {
         verifyNoInteractions(retriever); // chit-chat 不调召回
     }
 
+    // ---- #136 ProgressEmitter seam（context 携带 emitter，编排器 per-step 发射 StepStarted/StepFinished）----
+
+    @Test
+    void run_emitsStepStartedAndFinishedPerProceedStep() {
+        PipelineContext ctx = new PipelineContext("s", "你好");
+        List<ProgressEvent> events = new ArrayList<>();
+        ctx.setEmitter(events::add);
+        PipelineOrchestrator orchestrator = new PipelineOrchestrator(
+                List.of(proceedStep(), replyStep("您好")), phraseCenter);
+
+        orchestrator.run(ctx);
+
+        // 2 步 × (Started + Finished PROCEED) = 4 事件，保序
+        assertThat(events).hasSize(4);
+        assertThat(events.get(0)).isInstanceOf(ProgressEvent.StepStarted.class);
+        assertThat(events.get(1)).isInstanceOf(ProgressEvent.StepFinished.class);
+        assertThat(((ProgressEvent.StepFinished) events.get(1)).outcome()).isEqualTo(ProgressEvent.Outcome.PROCEED);
+        assertThat(events.get(2)).isInstanceOf(ProgressEvent.StepStarted.class);
+        assertThat(((ProgressEvent.StepFinished) events.get(3)).outcome()).isEqualTo(ProgressEvent.Outcome.PROCEED);
+    }
+
+    @Test
+    void run_shortCircuit_emitsFinishedShortCircuitAndStops() {
+        AtomicBoolean downstreamRan = new AtomicBoolean(false);
+        List<ProgressEvent> events = new ArrayList<>();
+        PipelineContext ctx = new PipelineContext("s", "x");
+        ctx.setEmitter(events::add);
+        PipelineOrchestrator orchestrator = new PipelineOrchestrator(
+                List.of(shortCircuitStep(DegradationScenario.INJECTION),
+                        proceedStep(() -> downstreamRan.set(true))), phraseCenter);
+
+        orchestrator.run(ctx);
+
+        // 短路步：Started + Finished(SHORT_CIRCUIT, INJECTION)；后续步零事件
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ProgressEvent.StepStarted.class);
+        ProgressEvent.StepFinished f = (ProgressEvent.StepFinished) events.get(1);
+        assertThat(f.outcome()).isEqualTo(ProgressEvent.Outcome.SHORT_CIRCUIT);
+        assertThat(f.scenario()).isEqualTo(DegradationScenario.INJECTION);
+        assertThat(downstreamRan).isFalse();
+    }
+
+    @Test
+    void run_degrade_emitsFinishedDegradeAndContinues() {
+        List<ProgressEvent> events = new ArrayList<>();
+        PipelineContext ctx = new PipelineContext("s", "x");
+        ctx.setEmitter(events::add);
+        PipelineOrchestrator orchestrator = new PipelineOrchestrator(
+                List.of(degradeStep(DegradationScenario.SESSION_DOWN), replyStep("您好")), phraseCenter);
+
+        orchestrator.run(ctx);
+
+        // degrade 步 Started+Finished(DEGRADE,SESSION_DOWN) + reply 步 Started+Finished(PROCEED) = 4
+        assertThat(events).hasSize(4);
+        ProgressEvent.StepFinished d = (ProgressEvent.StepFinished) events.get(1);
+        assertThat(d.outcome()).isEqualTo(ProgressEvent.Outcome.DEGRADE);
+        assertThat(d.scenario()).isEqualTo(DegradationScenario.SESSION_DOWN);
+        assertThat(((ProgressEvent.StepFinished) events.get(3)).outcome()).isEqualTo(ProgressEvent.Outcome.PROCEED);
+    }
+
+    @Test
+    void run_stepThrows_emitsFinishedException() {
+        List<ProgressEvent> events = new ArrayList<>();
+        PipelineContext ctx = new PipelineContext("s", "x");
+        ctx.setEmitter(events::add);
+        PipelineOrchestrator orchestrator = new PipelineOrchestrator(
+                List.of(throwingStep(new RuntimeException("boom"))), phraseCenter);
+
+        orchestrator.run(ctx);
+
+        assertThat(events).hasSize(2);
+        ProgressEvent.StepFinished f = (ProgressEvent.StepFinished) events.get(1);
+        assertThat(f.outcome()).isEqualTo(ProgressEvent.Outcome.EXCEPTION);
+        assertThat(f.scenario()).isEqualTo(DegradationScenario.INTERNAL);
+    }
+
     // ---- test stub steps ----
 
     private static PipelineStep proceedStep() {
@@ -297,5 +376,36 @@ class PipelineOrchestratorTest {
         return ctx -> {
             throw e;
         };
+    }
+
+    @Test
+    void run_emitterClosedMidway_cancelsBeforeNextStep() {
+        // 协作式取消：SSE 已关闭（用户"停止对话"）→ 步骤前断点短路 USER_CANCELLED，后续步骤不执行
+        AtomicBoolean closed = new AtomicBoolean(false);
+        List<String> executed = new ArrayList<>();
+        PipelineStep first = ctx -> {
+            executed.add("first");
+            closed.set(true); // 第一步执行期间用户停止
+            return new StepOutcome.Proceed();
+        };
+        PipelineStep second = ctx -> {
+            executed.add("second");
+            return new StepOutcome.Proceed();
+        };
+        PipelineContext ctx = new PipelineContext("sess-cancel", "你好");
+        ctx.setEmitter(new ProgressEmitter() {
+            @Override
+            public void emit(ProgressEvent event) { }
+            @Override
+            public boolean closed() { return closed.get(); }
+        });
+        PipelineOrchestrator orchestrator = new PipelineOrchestrator(List.of(first, second), phraseCenter);
+
+        PipelineResult result = orchestrator.run(ctx);
+
+        assertThat(executed).containsExactly("first"); // second 在断点被取消
+        assertThat(result.degraded()).isTrue();
+        assertThat(result.scenario()).isEqualTo("USER_CANCELLED");
+        assertThat(result.reply()).isEqualTo(DegradationScenario.USER_CANCELLED.phrase());
     }
 }

@@ -11,7 +11,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -73,15 +72,16 @@ public class LlmConfig {
      * 非构造期开关；合并发生在 {@link LangChain4jModelExecutor} 内 {@code customParameters} 注入处，
      * 引擎无关 seam（{@link ModelExecutor}）不变。
      *
-     * <p>超时：显式 120s——旧 {@code RestTemplate} 无显式超时（默认无限，推理模型慢调用会挂起请求），
-     * LC4j 路径显式给 120s（推理模型 thinking + {@code max_tokens=1024} 需足量预算；关思考路径秒回）。
-     * 后续可抽 {@code llm.timeout} 配置化（{@link LlmProperties} 暂无该字段）。
+     * <p>超时：{@code llm.timeout}（默认 60s，{@link LlmProperties#getTimeout()}）——超时预算须显著
+     * 小于 SSE 异步超时（{@code app.sse.timeout-ms} 默认 120s），否则单次超时吃满 SSE 窗口、超时兜底
+     * 话术来不及发（实测事故：旧硬编码 120s == SSE 120s，首次超时 + LC4j 内部重试 121s 才"成功"，
+     * 而连接已被容器掐断）。超时后重试/转移/降级归网关层（ResilientExecutor/FailoverExecutor/熔断）。
      */
     static RoutingModelExecutor buildRoutingExecutor(LlmProperties props) {
         Map<String, RoutingModelExecutor.Route> routes = new LinkedHashMap<>();
         for (LlmProperties.Provider p : props.getProviders()) {
             LangChain4jModelExecutor exec = new LangChain4jModelExecutor(p.getBaseUrl(), p.getApiKey(),
-                    p.getDisableThinkingParams(), Duration.ofSeconds(120));
+                    p.getDisableThinkingParams(), props.getTimeout());
             routes.put(p.getId() + "-large", new RoutingModelExecutor.Route(exec, p.getLargeModel()));
             routes.put(p.getId() + "-small", new RoutingModelExecutor.Route(exec, p.getSmallModel()));
         }

@@ -31,7 +31,14 @@ public class EmbeddingConfig {
 
     @Bean
     RestTemplate embeddingRestTemplate() {
-        return new RestTemplate();
+        // 超时预算治理：裸 RestTemplate 无超时（连接/读取无限挂起）——实测 SiliconFlow 故障期
+        // RAG 稠密检索被拖 90s+。15s 读超时 = 查询嵌入健康耗时（亚秒级）的 15 倍+ 余量；
+        // 超时→FailoverEmbeddingService 切备/降级稀疏-only，不阻塞链路。
+        org.springframework.http.client.SimpleClientHttpRequestFactory f =
+                new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        f.setConnectTimeout(10_000);
+        f.setReadTimeout(15_000);
+        return new RestTemplate(f);
     }
 
     @Bean
@@ -56,6 +63,10 @@ public class EmbeddingConfig {
     EmbeddingService embeddingService(EmbeddingProperties props,
                                       RestTemplate embeddingRestTemplate,
                                       ObjectMapper embeddingObjectMapper) {
-        return buildEmbeddingService(props, embeddingRestTemplate, embeddingObjectMapper);
+        EmbeddingService delegate = buildEmbeddingService(props, embeddingRestTemplate, embeddingObjectMapper);
+        // 熔断守卫：provider 故障期首次失败即开断路（冷却 30s 半开探测），查询快速降级稀疏-only，
+        // 不再每轮吃满读超时（实测首轮因此 70s）。种子灌库与查询共享同一守卫——启动期失败已把断路器打开。
+        CircuitBreakerGuard guard = new CircuitBreakerGuard("embedding", 60_000, 30_000);
+        return text -> guard.call(() -> delegate.embed(text));
     }
 }

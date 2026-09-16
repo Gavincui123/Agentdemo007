@@ -44,7 +44,11 @@ public class ToolSchemaProvider {
             for (Method method : ClassUtils.getUserClass(bean).getDeclaredMethods()) {
                 if (method.isAnnotationPresent(Tool.class)) {
                     ToolSpecification spec = ToolSpecifications.toolSpecificationFrom(method);
-                    m.put(spec.name(), new ToolBinding(spec, bean, method));
+                    // [[business-tools-workflow-dag]] §2.2：@ToolChannel 声明通道（RUNTIME/RAG/COMPUTE）；
+                    // 缺省 COMPUTE（向后兼容既有计算工具）
+                    ToolChannel tc = method.getAnnotation(ToolChannel.class);
+                    ToolCategory category = (tc != null) ? tc.value() : ToolCategory.COMPUTE;
+                    m.put(spec.name(), new ToolBinding(spec, bean, method, category));
                 }
             }
         }
@@ -83,6 +87,21 @@ public class ToolSchemaProvider {
         return r;
     }
 
-    /** 工具绑定（schema + bean + method），同源供 schema 与 executor 构造。 */
-    private record ToolBinding(ToolSpecification spec, Object bean, Method method) {}
+    /**
+     * 工具通道映射（name → category，[[business-tools-workflow-dag]] §2.2）。同源供
+     * {@link ToolCallExecutor} 为每个 {@link ToolCallResult} 标 category。
+     */
+    public Map<String, ToolCategory> categoryMap() {
+        return bindingsByName.entrySet().stream()
+                .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, e -> e.getValue().category()));
+    }
+
+    /** 单工具通道；未知 name 默认 COMPUTE（②每步降级，不阻塞）。 */
+    public ToolCategory categoryOf(String name) {
+        ToolBinding b = bindingsByName.get(name);
+        return (b != null) ? b.category() : ToolCategory.COMPUTE;
+    }
+
+    /** 工具绑定（schema + bean + method + category），同源供 schema、executor 构造与通道映射。 */
+    private record ToolBinding(ToolSpecification spec, Object bean, Method method, ToolCategory category) {}
 }

@@ -52,8 +52,14 @@ public class ToolConfig {
     @Bean
     ToolSchemaProvider toolSchemaProvider(
             TriangleAreaTool triangleTool, CircleAreaTool circleTool,
-            MultiplicationTool multiplicationTool, ArithmeticTool arithmeticTool) {
-        return new ToolSchemaProvider(List.of(triangleTool, circleTool, multiplicationTool, arithmeticTool));
+            MultiplicationTool multiplicationTool, ArithmeticTool arithmeticTool,
+            OrderQueryTool orderTool, UserQueryTool userTool, ProductQueryTool productTool,
+            ReturnPolicyTool returnPolicyTool, RefundPolicyTool refundPolicyTool,
+            PromotionPolicyTool promotionPolicyTool) {
+        // [[business-tools-workflow-dag]] §2.2：6 业务 @Tool（3 RUNTIME 外部系统 + 3 RAG 政策）并入单源；
+        // @ToolChannel 反射入 ToolBinding.category，ToolCallExecutor 据此标 ToolCallResult，ToolExecutionStep 路由
+        return new ToolSchemaProvider(List.of(triangleTool, circleTool, multiplicationTool, arithmeticTool,
+                orderTool, userTool, productTool, returnPolicyTool, refundPolicyTool, promotionPolicyTool));
     }
 
     /**
@@ -70,6 +76,7 @@ public class ToolConfig {
                                      @Value("${llm.max-tokens:1024}") int maxTokens) {
         log.info("工具调用执行器装配（LC4j 前向·option A 数据步）：specs={} maxTokens={}",
                 schemas.allSchemas().size(), maxTokens);
-        return new ToolCallExecutor(gateway, center, maxTokens, schemas.allSchemas(), schemas.executors(breaker));
+        return new ToolCallExecutor(gateway, center, maxTokens,
+                schemas.allSchemas(), schemas.executors(breaker), schemas.categoryMap());
     }
 }

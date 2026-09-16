@@ -5,6 +5,8 @@ import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.PipelineStep;
 import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.common.pipeline.StepOutcomeAuditor;
+import com.agentdemo007.common.progress.ProgressEmitter;
+import com.agentdemo007.common.progress.ProgressEvent;
 import org.bsc.langgraph4j.action.AsyncNodeAction;
 import org.bsc.langgraph4j.state.AgentState;
 
@@ -63,18 +65,33 @@ public class GraphNode {
                     .orElseThrow(() -> new IllegalStateException(
                             "langgraph4j 状态缺少 PipelineContext（键=" + CONTEXT_KEY
                                     + "）；图执行前须由 AgentStateGraph 注入"));
+            ProgressEmitter emitter = context.emitter(); // #136 图模式进度对齐线性：NO_OP 默认，chatStream 注入 Sse 桥接
+            emitter.emit(new ProgressEvent.StepStarted(step.name()));
             StepOutcome outcome;
             try {
                 outcome = step.process(context);
             } catch (Exception e) {
                 // 异常收口（镜像线性编排器 per-step catch）：审计 + 发 INTERNAL 短路供路由至 END
                 StepOutcomeAuditor.auditException(context, step.name(), e.getMessage());
+                emitter.emit(new ProgressEvent.StepFinished(step.name(),
+                        ProgressEvent.Outcome.EXCEPTION, DegradationScenario.INTERNAL));
                 return Map.of(OUTCOME_KEY,
                         new StepOutcome.ShortCircuit(DegradationScenario.INTERNAL));
             }
             // per-step 副作用（审计 + markDegraded）——经共享 StepOutcomeAuditor 收口，
             // 与线性编排器等价（degraded 须跨节点累积，否则 terminal 产出不一致）
             StepOutcomeAuditor.audit(context, step.name(), outcome);
+            if (outcome instanceof StepOutcome.ShortCircuit sc) {
+                emitter.emit(new ProgressEvent.StepFinished(step.name(),
+                        ProgressEvent.Outcome.SHORT_CIRCUIT, sc.scenario()));
+            } else if (outcome instanceof StepOutcome.Degrade d) {
+                emitter.emit(new ProgressEvent.StepFinished(step.name(),
+                        ProgressEvent.Outcome.DEGRADE, d.scenario()));
+            } else {
+                // Proceed / Retry：推进下一节点（图模式下由 GraphEdge 路由，进度语义同线性）
+                emitter.emit(new ProgressEvent.StepFinished(step.name(),
+                        ProgressEvent.Outcome.PROCEED, null));
+            }
             return Map.of(OUTCOME_KEY, outcome);
         });
     }

@@ -3,6 +3,7 @@ package com.agentdemo007.gateway.llm;
 import com.agentdemo007.gateway.core.LlmRequest;
 import com.agentdemo007.gateway.core.LlmResponse;
 import com.agentdemo007.gateway.core.ModelExecutor;
+import com.agentdemo007.gateway.core.StreamingReplyHandler;
 import com.agentdemo007.gateway.exception.ModelSelectionException;
 
 import java.util.Map;
@@ -43,6 +44,20 @@ public class RoutingModelExecutor implements ModelExecutor {
         // 使响应对外用稳定合成 id（调用方/审计/熔断 key 同构），不外泄 provider 的 raw 模型串。
         // toolCalls 一并透传（工具路径：模型发起的工具调用经路由层回传给 GatewayChatModel 翻译执行）。
         return new LlmResponse(request.modelId(), response.content(), response.tokens(), response.toolCalls());
+    }
+
+    /**
+     * 流式执行（[[q2-token-streaming]]）：合成 modelId 翻成 provider raw 模型串 + 委托 route.executor().stream。
+     * 镜像 {@link #execute} 的翻译逻辑（仅多传 handler）；未注册 id→{@link ModelSelectionException}。
+     */
+    @Override
+    public void stream(LlmRequest request, StreamingReplyHandler handler) {
+        Route route = routes.get(request.modelId());
+        if (route == null) {
+            throw new ModelSelectionException("未注册的模型路由：modelId=" + request.modelId());
+        }
+        route.executor().stream(new LlmRequest(route.apiModel(), request.prompt(),
+                request.maxTokens(), request.disableThinking(), request.messages(), request.tools()), handler);
     }
 
     /** 单条路由：委托执行器 + 发往 provider 的 raw 模型串。 */

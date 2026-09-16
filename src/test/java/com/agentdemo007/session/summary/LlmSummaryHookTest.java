@@ -59,4 +59,20 @@ class LlmSummaryHookTest {
 
         assertThat(hook.summarize(List.of(), "你好")).isEmpty();
     }
+
+    @Test
+    void summarize_promptEchoGarbage_returnsEmpty() {
+        // 实测事故：模型回显提示词碎片（含花括号）→ 垃圾锚点污染后续 System 提示——须丢弃
+        when(llm.chat(anyString(), eq(Intent.CHIT_CHAT)))
+                .thenReturn("用户当前输出锚点摘要锚'}");
+
+        assertThat(hook.summarize(List.of(), "帮我开增值税专用票")).isEmpty();
+    }
+
+    @Test
+    void summarize_overlyLongOutput_returnsEmpty() {
+        when(llm.chat(anyString(), eq(Intent.CHIT_CHAT))).thenReturn("一".repeat(80));
+
+        assertThat(hook.summarize(List.of(), "你好")).isEmpty();
+    }
 }

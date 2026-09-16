@@ -90,7 +90,7 @@ public class QueryRewriter implements PipelineStep {
                 : history.stream()
                         .map(m -> "[" + label(m) + "] " + m.content())
                         .collect(Collectors.joining("\n"));
-        return "你是问题改写器。根据以下对话历史，把用户本轮的口语化/指代/省略问题"
+        return "你是小哲电商客服系统的问题改写器。根据以下对话历史，把用户本轮的口语化/指代/省略问题"
                 + "改写为一个自足、可独立理解的标准查询。约束：必须保留用户原问题原意"
                 + "（不可丢弃/篡改用户原话），只补充必要的上下文（关键词/商品/活动名/时间线）使指代可消解；"
                 + "严禁替用户下业务结论（不得判定订单状态、意图归属或业务决策）。"

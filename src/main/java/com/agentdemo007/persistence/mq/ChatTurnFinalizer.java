@@ -1,12 +1,17 @@
 package com.agentdemo007.persistence.mq;
 
+import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.PipelineResult;
 import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.session.cache.SessionCacheService;
+import com.agentdemo007.session.model.ChatMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
  * 会话终端后置钩子（Phase 13·异步持久化收口）。
@@ -31,17 +36,24 @@ public class ChatTurnFinalizer {
     private final HistoryPersistProducer historyPersistProducer;
     private final AuditProducer auditProducer;
     private final AgentMetrics metrics;
+    private final SessionCacheService sessionCache;
 
     public ChatTurnFinalizer(HistoryPersistProducer historyPersistProducer, AuditProducer auditProducer) {
         this(historyPersistProducer, auditProducer, AgentMetrics.NO_OP);
     }
 
+    public ChatTurnFinalizer(HistoryPersistProducer historyPersistProducer, AuditProducer auditProducer,
+                             AgentMetrics metrics) {
+        this(historyPersistProducer, auditProducer, metrics, null);
+    }
+
     @Autowired
     public ChatTurnFinalizer(HistoryPersistProducer historyPersistProducer, AuditProducer auditProducer,
-                            AgentMetrics metrics) {
+                             AgentMetrics metrics, SessionCacheService sessionCache) {
         this.historyPersistProducer = historyPersistProducer;
         this.auditProducer = auditProducer;
         this.metrics = metrics;
+        this.sessionCache = sessionCache;
     }
 
     /**
@@ -51,8 +63,31 @@ public class ChatTurnFinalizer {
      * @param result  终端结果（reply/degraded/scenario 之源）
      */
     public void finalizeTurn(PipelineContext context, PipelineResult result) {
+        safeAppendHistory(context, result);
         safePersistHistory(context, result);
         safeFlushAudit(context);
+    }
+
+    /**
+     * 会话历史写入（修复：{@code SessionCacheService.append} 此前零调用——历史只读不写，
+     * 每轮都被当"新建会话"，多轮上下文与摘要锚点形同虚设）。追加 [User(rawInput), Ai(finalReply)]；
+     * {@code USER_CANCELLED}（用户停止，未产出真实回复）不追加。best-effort：失败仅告警。
+     */
+    private void safeAppendHistory(PipelineContext context, PipelineResult result) {
+        if (sessionCache == null) {
+            return;
+        }
+        if (DegradationScenario.USER_CANCELLED.name().equals(result.scenario())) {
+            return;
+        }
+        try {
+            sessionCache.append(context.sessionId(), List.of(
+                    new ChatMessage.User(context.rawInput()),
+                    new ChatMessage.Ai(result.reply())));
+        } catch (Exception e) {
+            log.warn("会话历史写入失败（不影响主接口）：sessionId={} reason={}",
+                    context.sessionId(), e.getMessage());
+        }
     }
 
     private void safePersistHistory(PipelineContext context, PipelineResult result) {

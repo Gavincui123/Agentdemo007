@@ -72,6 +72,34 @@ public class GlobalExceptionHandler {
                 .body(UnifiedResponse.error(ErrorCode.NOT_FOUND));
     }
 
+    /**
+     * SSE/异步请求超时（{@code AsyncRequestTimeoutException}）：HTTP 503，无 body。
+     *
+     * <p>SSE 端点（{@code /chat/stream}）超时后响应 Content-Type 已是 {@code text/event-stream}
+     * （部分已提交），落 {@link #handleUnexpected} 会尝试写 {@link UnifiedResponse} JSON 到
+     * SSE 流 → {@code HttpMessageNotWritableException: No converter} 二次异常刷 ERROR。
+     * 兜底话术由 {@code ChatController} 的 {@code SseEmitter.onTimeout} 补发（终态同形），
+     * 此处只收口状态码、不再写 body。
+     */
+    @ExceptionHandler(org.springframework.web.context.request.async.AsyncRequestTimeoutException.class)
+    public ResponseEntity<Void> handleAsyncRequestTimeout(
+            org.springframework.web.context.request.async.AsyncRequestTimeoutException ex) {
+        log.warn("异步请求超时（SSE 兜底话术已由 onTimeout 补发）：{}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+    }
+
+    /**
+     * 客户端断开（{@code AsyncRequestNotUsableException}，如用户点"停止对话"中止 SSE）：
+     * INFO 日志 + 无 body。连接已断，写什么都到不了客户端——落 {@link #handleUnexpected}
+     * 会刷 ERROR + 二次 JSON 转换失败（text/event-stream 已提交）。
+     */
+    @ExceptionHandler(org.springframework.web.context.request.async.AsyncRequestNotUsableException.class)
+    public ResponseEntity<Void> handleAsyncNotUsable(
+            org.springframework.web.context.request.async.AsyncRequestNotUsableException ex) {
+        log.info("客户端断开（SSE 中止/超时），异步请求不可用：{}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<UnifiedResponse> handleUnexpected(Exception ex) {
         log.error("未预期异常", ex);

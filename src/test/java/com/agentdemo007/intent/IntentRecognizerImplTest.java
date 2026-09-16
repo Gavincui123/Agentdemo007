@@ -119,4 +119,23 @@ class IntentRecognizerImplTest {
         assertThat(c.intent()).isEqualTo(Intent.REASONING); // 冲突上交小模型
         verify(llm).decide(anyString());
     }
+
+    @Test
+    void modelOutputsTransferToHuman_fallsBackUnknown_notTransfer() {
+        // 意图漂移治理：转人工是用户显式诉求（关键词层 0.95 触发），模型不得自行判 TRANSFER_TO_HUMAN
+        // ——实测模型把"帮我开增值税专用票"判成转人工 → HitlStep 建工单短路，业务问题被话术劫持
+        IntentRecognizerImpl r = recognizerWith();
+        when(llm.decide(anyString())).thenReturn("TRANSFER_TO_HUMAN");
+
+        IntentCategory c = r.recognize("帮我开增值税专用票", List.of());
+
+        assertThat(c.intent()).isEqualTo(Intent.OTHER); // 解析被拒 → 兜底 UNKNOWN
+        org.mockito.ArgumentCaptor<String> prompt =
+                org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(llm).decide(prompt.capture());
+        assertThat(prompt.getValue()).doesNotContain("TRANSFER_TO_HUMAN"); // 候选不暴露给模型
+        assertThat(prompt.getValue()).doesNotContain("INJECTION"); // 注入同样规则层独占
+        // 提示词工程结构钉：任务原则 + 带定义候选 + few-shot 示例 + 输出格式（防后续被改空回归单句提示词）
+        assertThat(prompt.getValue()).contains("分类原则").contains("候选意图").contains("示例").contains("输出格式");
+    }
 }

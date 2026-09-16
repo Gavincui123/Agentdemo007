@@ -63,7 +63,7 @@ public class RoutePromptBuilder {
         String transcript = transcript(history);
         String q = query == null ? "（空）" : query;
         StringBuilder sb = new StringBuilder();
-        sb.append("你是电商客服路由模型。根据对话历史与用户本轮问题，产出一份路由候选 JSON。")
+        sb.append("你是小哲电商客服系统的路由决策器。根据对话历史与用户本轮问题，产出一份路由候选 JSON。")
           .append("只输出 JSON，不要附加说明。字段如下（snake_case）：\n")
           .append(FIELD_SPEC.stream().map(f -> "  - " + f).collect(Collectors.joining("\n"))).append("\n")
           .append("约束：intent 只能从以下选一个：").append(String.join(" / ", baselines.knownIntents())).append("；")
