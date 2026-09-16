@@ -132,10 +132,17 @@ llm:
   enabled: ${LLM_ENABLED:false}
   # 生成最大 token（推理模型思考开时 1024 常令 reasoning 耗尽→空 content→LlmUnavailable；调高如 4096 给 reasoning+答案留预算，或关 thinking.enabled=false 根除）
   max-tokens: ${LLM_MAX_TOKENS:1024}
-  # 思考模式开关（意图驱动）：闲聊(CHIT_CHAT)恒关思考；非闲聊由 enabled 定（true=开思考，默认）。
-  # 关闭后非闲聊请求也会把每 provider 的 disable-thinking-params 合并进 body 关思考。
+  # 单次 LLM HTTP 调用超时（超时预算治理）：须显著小于 SSE 异步超时 app.sse.timeout-ms（默认 120s）
+  # ——超时后由网关层同模型重试/主备转移/降级话术兜底；LC4j 内部重试已关（maxRetries=0）不叠加放大。
+  # 20s 依据：关思考后各调用实测 0.6~2.8s，20s=7~30 倍余量；实测 SiliconFlow 间歇挂起
+  # （改写调用挂 60.8s 后重试 0.7s 成功）——阈值越低单次挂起损失越小。
+  timeout: ${LLM_TIMEOUT:20s}
+  # 思考模式开关（意图驱动）：闲聊(CHIT_CHAT)恒关思考；非闲聊由 enabled 定。
+  # 默认 false（实测事故：REASONING 简单问题"2加3乘4"思考开时输出步 35.7s 无首字——Qwen3.5 先吐
+  # reasoning_content 再吐正文，SSE 只流正文→用户干等打字点；关思考后秒级出字）。
+  # 需要深度推理质量时经环境变量 LLM_THINKING_ENABLED=true 重新打开（maxTokens 需同步调大）。
   thinking:
-    enabled: ${LLM_THINKING_ENABLED:true}
+    enabled: ${LLM_THINKING_ENABLED:false}
   circuit-breaker:
     window-ms: ${LLM_CB_WINDOW_MS:60000}
     failure-threshold: ${LLM_CB_FAILURE_THRESHOLD:5}
@@ -166,7 +173,7 @@ llm:
 #         confidence: 0.95
 intent:
   keywords:
-    rules: []  # 空=用内置 11 条默认关键词；填入即替换默认
+    rules: []  # 空=用内置默认关键词；填入即合并（同字覆盖、新增追加；内置业务词始终保留）
 
 # ---- Phase 21 稠密嵌入（主备容灾，OpenAI 兼容 /v1/embeddings）----
 # embedding.enabled=false/缺省 → dev HashEmbeddingService（假向量，不调 API；混合检索稠密通道占位）；
@@ -212,6 +219,13 @@ agentdemo:
 app:
   model-selector:
     strategy: ${MODEL_SELECTOR_STRATEGY:tag}
+  # ---- 提示词源（[[q1-nacos-prompt-mgmt]]）：local/缺省→LocalPromptSource 内存源（dev）；
+  #       nacos→PromptSourceConfig 装配 NacosPromptSource（经 AiService 拉取 + md5 gRPC 热推），
+  #       复用 spring.nacos.config.* 连接参数。promptKey：system-prompt-segments（分段式系统
+  #       提示词片段清单，bare YAML 数组）、clarify-return/clarify-refund（澄清话术）——Nacos 控制台
+  #       「AI 资源→提示词模板」按 key 建；缺 key/Nacos 不可达→②降级回退硬编码默认，不阻塞 context。----
+  prompt:
+    source: ${PROMPT_SOURCE:local}
   # ---- 会话缓存：app.redis.enabled=true→真实 Redis（spring.data.redis.* 连接）；false→内存兜底 ----
   redis:
     enabled: ${REDIS_ENABLED:false}
@@ -244,3 +258,10 @@ app:
   # ---- Phase 14 LangGraph 死循环护栏：单请求最大迭代次数（§5.13 兜底，图模式生效）----
   langgraph:
     max-iterations: ${LANGGRAPH_MAX_ITERATIONS:25}
+  # ---- [[business-tools-workflow-dag]] 高风险固定工作流：enabled=true→装配 6 节点 AfterSaleWorkflowGraph
+  #       + WorkflowExecutionStep@670（entity-gate 澄清 + 终态收口 + 状态机续跑/切换/放弃）；
+  #       缺省 false→不装配，@670 槽空，旧链线性等价（RagStep→ContextBuilder 不变）。
+  #       dev 跑真售后 2 轮流：WORKFLOW_ENABLED=true（+ LLM_ENABLED=true + SF_KEY 真路由）；
+  #       mock 数据对齐演示用户 10086/gold（ORD-001/002 归 10086、ORD-003 归 10010）。
+  workflow:
+    enabled: ${WORKFLOW_ENABLED:false}

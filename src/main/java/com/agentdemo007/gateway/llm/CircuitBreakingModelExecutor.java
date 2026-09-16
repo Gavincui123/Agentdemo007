@@ -3,6 +3,7 @@ package com.agentdemo007.gateway.llm;
 import com.agentdemo007.gateway.core.LlmRequest;
 import com.agentdemo007.gateway.core.LlmResponse;
 import com.agentdemo007.gateway.core.ModelExecutor;
+import com.agentdemo007.gateway.core.StreamingReplyHandler;
 import com.agentdemo007.gateway.exception.CircuitOpenException;
 import com.agentdemo007.resilience.Decision;
 import com.agentdemo007.resilience.ExceptionTriage;
@@ -55,5 +56,47 @@ public class CircuitBreakingModelExecutor implements ModelExecutor {
             }
             throw e;
         }
+    }
+
+    /**
+     * 流式出站（[[q2-token-streaming]]）：熔断语义镜像 {@link #execute}——OPEN→抛 {@link CircuitOpenException}
+     * 快速失败（不调 delegate，向上传→{@code ChatLlmService.chatRawStream} 捕获转 onError→OutputStep 回退阻塞，
+     * 阻塞路径有完整主备容灾可切备）。放行则转发 {@code delegate.stream}。
+     *
+     * <p>流式异步回调（{@code delegate.stream} 返回后 token 才陆续到），故<b>包装 handler 记账</b>而非 try-catch：
+     * {@code onCompleteResponse}→{@code recordSuccess}（半开探针成功恢复，与 execute 探针同语义）；
+     * {@code onError}→经 {@link ExceptionTriage} 分诊，<b>仅模型可用性失败</b>（瞬态/不可重试客户端错）
+     * {@code recordFailure}，致命({@code AUDIT_AND_FAIL})/工具({@code FEEDBACK_TO_LLM}) 不计入（与 execute 同路不误熔断）。
+     * 同步抛（OPEN）走 chatRawStream 的 catch 转 onError；异步错经包装 handler 记账后透传 onError。
+     */
+    @Override
+    public void stream(LlmRequest request, StreamingReplyHandler handler) {
+        String modelId = request.modelId();
+        if (!breaker.allow(modelId)) {
+            throw new CircuitOpenException(modelId);
+        }
+        delegate.stream(request, new StreamingReplyHandler() {
+            @Override
+            public void onPartialResponse(String token) {
+                handler.onPartialResponse(token);
+            }
+            @Override
+            public void onCompleteResponse(String fullReply, int tokens) {
+                breaker.recordSuccess(modelId); // 流式成功→记熔断成功（半开探针可恢复）
+                handler.onCompleteResponse(fullReply, tokens);
+            }
+            @Override
+            public void onError(Throwable error) {
+                // 仅 RuntimeException 经分诊记账（与 execute catch(RuntimeException) 同路）；非运行时异常不计入。
+                if (error instanceof RuntimeException re) {
+                    TriageResult result = triage.triage(re);
+                    Decision d = result.decision();
+                    if (d != Decision.AUDIT_AND_FAIL && d != Decision.FEEDBACK_TO_LLM) {
+                        breaker.recordFailure(modelId); // 模型可用性失败→计熔断
+                    }
+                }
+                handler.onError(error);
+            }
+        });
     }
 }

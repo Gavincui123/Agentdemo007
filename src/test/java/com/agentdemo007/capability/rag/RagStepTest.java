@@ -1,5 +1,7 @@
 package com.agentdemo007.capability.rag;
 
+import com.agentdemo007.capability.plan.RoutePlan;
+import com.agentdemo007.capability.plan.RoutePlanCandidate;
 import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.StepOutcome;
@@ -12,9 +14,15 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.List;
 
+import static com.agentdemo007.capability.plan.RoutePlanCandidate.FallbackPolicy;
+import static com.agentdemo007.capability.plan.RoutePlanCandidate.RiskLevel;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 /**
  * RAG 步骤测试（第四层·{@code @Order(660)}，填 {@code ragFragments}，空/失败→{@code Degrade(RAG_SKIP)}）。
@@ -232,5 +240,87 @@ class RagStepTest {
         assertThat(citation).contains("kb-historical");          // 来源
         assertThat(citation).contains("历史参考资料");           // displayText 时效前缀
         assertThat(citation).contains("2024-06-30");             // 截至 validUntil
+    }
+
+    // ---- #135 渐进消费·source 门控（[[routeplan-design]]）：routePlan.source==LLM_WITH_POLICY_CONSTRAINTS
+    //       时按 needsRag 决策；DETERMINISTIC_FALLBACK/null 回退现有 Intent 逻辑（noop 测试不破）----
+
+    @Test
+    void routePlanLlmSourced_needsRagFalse_skipsRag_noRetriever() {
+        // route 真实候选决策无需 RAG → 正常跳过（非降级，同 chit-chat skip 语义）
+        Retriever retriever = mock(Retriever.class);
+        RagStep step = ragStepWith(retriever);
+        PipelineContext ctx = new PipelineContext("rp1", "退款流程");
+        ctx.setIntent(Intent.OTHER); // 非闲聊，隔离 routePlan 门控（否则先撞旧 chit-chat 短路）
+        ctx.setRoutePlan(routePlan(false, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS));
+
+        StepOutcome out = step.process(ctx);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(ctx.degraded()).isFalse();
+        assertThat(ctx.ragFragments()).isEmpty();
+        verifyNoInteractions(retriever);
+    }
+
+    @Test
+    void routePlanLlmSourced_needsRagTrue_runsRagChain() {
+        Retriever retriever = mock(Retriever.class);
+        when(retriever.retrieve(anyString(), anyInt())).thenReturn(List.of(frag("退款流程说明")));
+        RagStep step = ragStepWith(retriever);
+        PipelineContext ctx = new PipelineContext("rp2", "退款流程");
+        ctx.setIntent(Intent.OTHER);
+        ctx.setRoutePlan(routePlan(true, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS));
+
+        StepOutcome out = step.process(ctx);
+
+        verify(retriever).retrieve(anyString(), anyInt());
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(ctx.ragFragments()).contains("退款流程说明");
+    }
+
+    @Test
+    void routePlanDeterministicFallback_chitChat_skipsViaOldIntentLogic() {
+        // source=DETERMINISTIC_FALLBACK → 不采信 routePlan（兜底候选），回退现有 Intent 逻辑
+        Retriever retriever = mock(Retriever.class);
+        RagStep step = ragStepWith(retriever);
+        PipelineContext ctx = new PipelineContext("rp3", "你好");
+        ctx.setIntent(Intent.CHIT_CHAT);
+        ctx.setRoutePlan(routePlan(true, RoutePlan.Source.DETERMINISTIC_FALLBACK)); // needsRag=true 但 fallback→不采信
+
+        StepOutcome out = step.process(ctx);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(ctx.degraded()).isFalse();
+        verifyNoInteractions(retriever); // 旧逻辑：chit-chat 跳过
+    }
+
+    @Test
+    void routePlanDeterministicFallback_nonChitChat_runsRagViaOldIntentLogic() {
+        // fallback→不采信 routePlan.needsRag=false；旧逻辑：非闲聊→跑 RAG
+        Retriever retriever = mock(Retriever.class);
+        when(retriever.retrieve(anyString(), anyInt())).thenReturn(List.of(frag("退款说明")));
+        RagStep step = ragStepWith(retriever);
+        PipelineContext ctx = new PipelineContext("rp4", "退款");
+        ctx.setIntent(Intent.OTHER);
+        ctx.setRoutePlan(routePlan(false, RoutePlan.Source.DETERMINISTIC_FALLBACK));
+
+        step.process(ctx);
+
+        verify(retriever).retrieve(anyString(), anyInt());
+    }
+
+    // ---- helpers（#135 routePlan source 门控测试）----
+
+    private RagStep ragStepWith(Retriever retriever) {
+        return new RagStep(retriever,
+                new RetrievalValidator(0.0, 1), new Bm25Reranker(), new RagInjectionScanner(), 5);
+    }
+
+    private static RoutePlan routePlan(boolean needsRag, RoutePlan.Source source) {
+        RoutePlanCandidate c = new RoutePlanCandidate(
+                "x", needsRag, false, List.of(),
+                needsRag ? List.of("faq") : List.of(),
+                RiskLevel.LOW, false, FallbackPolicy.SAFE_DETERMINISTIC_PATH);
+        return new RoutePlan(c, source, 0.9, List.of());
     }
 }

@@ -1,5 +1,7 @@
 package com.agentdemo007.capability.tool;
 
+import com.agentdemo007.capability.plan.RoutePlan;
+import com.agentdemo007.capability.plan.RoutePlanCandidate;
 import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.StepOutcome;
@@ -12,11 +14,14 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static com.agentdemo007.capability.plan.RoutePlanCandidate.FallbackPolicy;
+import static com.agentdemo007.capability.plan.RoutePlanCandidate.RiskLevel;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -43,7 +48,7 @@ class ToolExecutionStepTest {
 
     @Test
     void toolCall_fillsToolResults_proceeds() {
-        when(executor.execute("计算 1+2*3")).thenReturn(List.of("7"));
+        when(executor.execute("计算 1+2*3")).thenReturn(List.of(new ToolCallResult("calc", "7", ToolCategory.COMPUTE)));
         PipelineContext ctx = new PipelineContext("s1", "计算 1+2*3");
         ctx.setStandardQuery(StandardQuery.of("计算 1+2*3"));
 
@@ -97,7 +102,7 @@ class ToolExecutionStepTest {
         AgentMetrics metrics = new AgentMetrics(registry);
         ToolCallExecutor okExec = mock(ToolCallExecutor.class);
         ToolCallExecutor failExec = mock(ToolCallExecutor.class);
-        when(okExec.execute(anyString())).thenReturn(List.of("7"));
+        when(okExec.execute(anyString())).thenReturn(List.of(new ToolCallResult("calc", "7", ToolCategory.COMPUTE)));
         when(failExec.execute(anyString())).thenThrow(new ToolCircuitOpenException("flaky"));
         ToolExecutionStep okStep = new ToolExecutionStep(okExec, metrics);
         ToolExecutionStep failStep = new ToolExecutionStep(failExec, metrics);
@@ -107,5 +112,62 @@ class ToolExecutionStepTest {
 
         assertThat(registry.counter("agent.tool", "success", "true").count()).isEqualTo(1.0);
         assertThat(registry.counter("agent.tool", "success", "false").count()).isEqualTo(1.0);
+    }
+
+    // ---- #135 渐进消费·source 门控（[[routeplan-design]]）：routePlan.source==LLM_WITH_POLICY_CONSTRAINTS
+    //       时按 needsBusinessTools 决策；DETERMINISTIC_FALLBACK/null 回退现有逻辑（跑 executor）----
+
+    @Test
+    void routePlanLlmSourced_needsBusinessToolsFalse_skipsTools_noExecutor() {
+        // route 真实候选决策不需要业务工具 → 跳过工具执行（省一次 function-calling LLM 调用）
+        PipelineContext ctx = new PipelineContext("rp1", "你好");
+        ctx.setStandardQuery(StandardQuery.of("你好"));
+        ctx.setRoutePlan(routePlan(false, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS));
+
+        StepOutcome out = step.process(ctx);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(ctx.toolResults()).isEmpty();
+        verifyNoInteractions(executor);
+    }
+
+    @Test
+    void routePlanLlmSourced_needsBusinessToolsTrue_runsExecutor() {
+        when(executor.execute(anyString())).thenReturn(List.of(new ToolCallResult("calc", "7", ToolCategory.COMPUTE)));
+        PipelineContext ctx = new PipelineContext("rp2", "计算 1+2");
+        ctx.setStandardQuery(StandardQuery.of("计算 1+2"));
+        ctx.setRoutePlan(routePlan(true, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS));
+
+        StepOutcome out = step.process(ctx);
+
+        verify(executor).execute(anyString());
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(ctx.toolResults()).containsExactly("7");
+    }
+
+    @Test
+    void routePlanDeterministicFallback_needsBusinessToolsFalse_stillRunsExecutor() {
+        // source=DETERMINISTIC_FALLBACK → 不采信 routePlan.needsBusinessTools=false，回退现有逻辑跑 executor
+        when(executor.execute(anyString())).thenReturn(List.of());
+        PipelineContext ctx = new PipelineContext("rp3", "你好");
+        ctx.setStandardQuery(StandardQuery.of("你好"));
+        ctx.setRoutePlan(routePlan(false, RoutePlan.Source.DETERMINISTIC_FALLBACK));
+
+        step.process(ctx);
+
+        verify(executor).execute(anyString());
+    }
+
+    // ---- helper（#135 routePlan source 门控测试）----
+
+    private static RoutePlan routePlan(boolean needsBusinessTools, RoutePlan.Source source) {
+        RoutePlanCandidate c = new RoutePlanCandidate(
+                needsBusinessTools ? "order_query" : "general_chat",
+                false, needsBusinessTools,
+                needsBusinessTools ? List.of("get_order_logistics") : List.of(),
+                List.of(),
+                RiskLevel.LOW, false,
+                needsBusinessTools ? FallbackPolicy.TOOL_FIRST : FallbackPolicy.SAFE_DETERMINISTIC_PATH);
+        return new RoutePlan(c, source, 0.9, List.of());
     }
 }

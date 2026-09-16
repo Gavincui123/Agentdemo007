@@ -31,6 +31,19 @@ public class UnifiedModelGateway {
         return response;
     }
 
+    /**
+     * 流式出站（[[q2-token-streaming]]）：预算关卡仍守，主模型直接 {@code executor.stream}——
+     * <b>无中途故障转移</b>（流式不可中途切备/重试）。同步抛（预算超限/模型选择错/leaf 前置抛）向上传，
+     * 由 {@code ChatLlmService.chatRawStream} 捕获转 {@code handler.onError}，调用方（OutputStep）回退阻塞
+     * {@code invoke}（有完整主备容灾）→韧性不丢。
+     */
+    public void stream(GatewayRequest request, StreamingReplyHandler handler) {
+        FlowControlPolicy policy = request.flowControlPolicy();
+        budgetChecker.check(request, policy); // 超限 → RateLimitExceededException（向上传→onError）
+        executor.stream(new LlmRequest(request.primaryModelId(), request.prompt(), request.maxTokens(),
+                request.disableThinking(), request.messages(), request.tools()), handler);
+    }
+
     public TokenBudgetChecker budget() {
         return budgetChecker;
     }

@@ -3,6 +3,7 @@ package com.agentdemo007.gateway.llm;
 import com.agentdemo007.gateway.core.LlmRequest;
 import com.agentdemo007.gateway.core.LlmResponse;
 import com.agentdemo007.gateway.core.ModelExecutor;
+import com.agentdemo007.gateway.core.StreamingReplyHandler;
 import com.agentdemo007.gateway.exception.ModelSelectionException;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +33,14 @@ class RoutingModelExecutorTest {
             received.add(request);
             return new LlmResponse(request.modelId(), "ok-" + name, 1);
         }
+
+        @Override
+        public void stream(LlmRequest request, StreamingReplyHandler handler) {
+            received.add(request);
+            handler.onPartialResponse("tok-1-" + name);
+            handler.onPartialResponse("tok-2-" + name);
+            handler.onCompleteResponse("tok-1-" + name + "tok-2-" + name, 2);
+        }
     }
 
     @Test
@@ -59,6 +68,41 @@ class RoutingModelExecutorTest {
     void unregisteredModelIdThrowsSelectionException() {
         RoutingModelExecutor router = new RoutingModelExecutor(Map.of());
         assertThatThrownBy(() -> router.execute(new LlmRequest("nobody", "hi", 1024)))
+                .isInstanceOf(ModelSelectionException.class);
+    }
+
+    // ---- [[q2-token-streaming]] 流式：合成 id 翻 raw 串 + 委托 route.executor().stream ----
+
+    @Test
+    void stream_translatesSyntheticIdAndDelegatesToRouteStream() {
+        CapturingExecutor siliconflow = new CapturingExecutor("siliconflow");
+        RoutingModelExecutor router = new RoutingModelExecutor(Map.of(
+                "siliconflow-large", new RoutingModelExecutor.Route(siliconflow, "Qwen/Qwen3.5-35B-A3B")));
+        List<String> tokens = new ArrayList<>();
+        StreamingReplyHandler handler = new StreamingReplyHandler() {
+            @Override public void onPartialResponse(String token) { tokens.add(token); }
+            @Override public void onCompleteResponse(String fullReply, int tokens) { }
+            @Override public void onError(Throwable error) { }
+        };
+
+        router.stream(new LlmRequest("siliconflow-large", "hi", 1024), handler);
+
+        // 委托到 route executor.stream + 翻成 provider raw 模型串（非合成 id）
+        assertThat(siliconflow.received).hasSize(1);
+        assertThat(siliconflow.received.get(0).modelId()).isEqualTo("Qwen/Qwen3.5-35B-A3B");
+        // handler 回调透传（路由层不吞 token）
+        assertThat(tokens).containsExactly("tok-1-siliconflow", "tok-2-siliconflow");
+    }
+
+    @Test
+    void stream_unregisteredModelIdThrowsSelectionException() {
+        RoutingModelExecutor router = new RoutingModelExecutor(Map.of());
+        StreamingReplyHandler noop = new StreamingReplyHandler() {
+            @Override public void onPartialResponse(String token) { }
+            @Override public void onCompleteResponse(String fullReply, int tokens) { }
+            @Override public void onError(Throwable error) { }
+        };
+        assertThatThrownBy(() -> router.stream(new LlmRequest("nobody", "hi", 1024), noop))
                 .isInstanceOf(ModelSelectionException.class);
     }
 }

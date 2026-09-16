@@ -37,11 +37,23 @@ public class LlmSummaryHook implements SummaryHook {
             if (summary == null || summary.isBlank()) {
                 return Optional.empty();
             }
-            return Optional.of(summary.trim());
+            String trimmed = summary.trim();
+            if (isGarbage(trimmed)) {
+                // 锚点要写入 System 提示并喂给后续轮次——垃圾摘要（模型回显提示词碎片/超长跑偏）
+                // 会污染整个会话上下文，宁缺毋滥（②降级：无锚点继续推进）
+                log.warn("摘要输出疑似垃圾（含花括号或超长），丢弃锚点：len={}", trimmed.length());
+                return Optional.empty();
+            }
+            return Optional.of(trimmed);
         } catch (Exception e) {
             log.warn("摘要生成失败（降级跳过锚点）：reason={}", e.getMessage());
             return Optional.empty();
         }
+    }
+
+    /** 垃圾摘要判定：含 '{'/'}'（提示词/JSON 碎片回显）或超过 60 字（一句话概括的正常上界）。 */
+    private static boolean isGarbage(String summary) {
+        return summary.indexOf('{') >= 0 || summary.indexOf('}') >= 0 || summary.length() > 60;
     }
 
     private String buildPrompt(List<ChatMessage> priorHistory, String currentInput) {
@@ -50,7 +62,8 @@ public class LlmSummaryHook implements SummaryHook {
                 : priorHistory.stream()
                         .map(m -> "[" + label(m) + "] " + m.content())
                         .collect(Collectors.joining("\n"));
-        return "请用一句话概括以下会话的主题，作为后续上下文锚点（仅输出摘要，不要附加说明）：\n"
+        return "你是小哲电商客服系统的会话摘要助手。请用一句话概括以下会话的主题，"
+                + "作为后续上下文锚点（仅输出摘要，不要附加说明）：\n"
                 + transcript + "\n本轮用户输入：" + currentInput;
     }
 

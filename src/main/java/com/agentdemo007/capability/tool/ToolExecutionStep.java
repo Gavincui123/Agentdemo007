@@ -1,5 +1,7 @@
 package com.agentdemo007.capability.tool;
 
+import com.agentdemo007.capability.business.PolicyFragment;
+import com.agentdemo007.capability.plan.RoutePlan;
 import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.PipelineStep;
@@ -14,13 +16,15 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 工具执行步骤（第四层·{@code @Order(650)}，紧随 {@code RouteDispatchStep}、先于 {@code ContextBuilder}）。
  *
  * <p>对标准化 Query 经 {@link ToolCallExecutor}（② Slice 3·option A 数据步·替手撸 {@code ToolExecutor}）
  * 单次前向 LLM function-calling：模型出 {@code tool_calls} 则经 {@link ResilientToolExecutor} 执行真 {@code @Tool}
- * → 结果列表写入 {@code context.toolResults}（客观数据层消费，下游 ContextBuilder+终答步不动，收口最稳）；
+ * → 结果按 {@link ToolCallResult#category()} 路由 3 通道（RUNTIME→{@code runtimeFacts} / RAG→{@code ragFragments}
+ * +{@code ragCitations} / COMPUTE→{@code toolResults}，[[business-tools-workflow-dag]] §2.2·用户钦定）；
  * 未出 {@code tool_calls} → 空过。落地收口（{@link StepOutcome}）：
  * <ul>
  *   <li>无工具调用 / 执行成功 → Proceed；</li>
@@ -53,11 +57,20 @@ public class ToolExecutionStep implements PipelineStep {
 
     @Override
     public StepOutcome process(PipelineContext context) {
+        // #135 渐进消费·source 门控（[[routeplan-design]]）：routePlan 为真实 LLM 候选（source=
+        // LLM_WITH_POLICY_CONSTRAINTS）且 needsBusinessTools=false → 跳过工具执行（省一次 function-calling
+        // 调用）；DETERMINISTIC_FALLBACK/null 回退现有逻辑（跑 executor）——noop 测试/兜底候选不采信 routePlan，
+        // 现有行为不破。requiredTools per-route 子集（ToolProvider）= Slice 4 留后；本步仅 needsBusinessTools 门控。
+        RoutePlan rp = context.routePlan();
+        if (rp != null && rp.source() == RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS
+                && !rp.needsBusinessTools()) {
+            return new StepOutcome.Proceed();
+        }
         String query = resolveQuery(context);
         try {
-            List<String> results = executor.execute(query);
+            List<ToolCallResult> results = executor.execute(query);
             if (!results.isEmpty()) {
-                context.setToolResults(results);
+                routeResults(context, results);
                 log.debug("工具执行完成：sessionId={} results={}", context.sessionId(), results);
             }
             metrics.recordTool(true);
@@ -73,6 +86,33 @@ public class ToolExecutionStep implements PipelineStep {
                 log.warn("指标记录失败，忽略（不影响降级短路）：{}", metricEx.getMessage());
             }
             return new StepOutcome.ShortCircuit(DegradationScenario.TOOL_FAILURE);
+        }
+    }
+
+    /**
+     * 按 category 路由工具结果到 3 通道（[[business-tools-workflow-dag]] §2.2·用户钦定）：
+     * <ul>
+     *   <li>RUNTIME → {@code context.runtimeFacts}（外部系统高置信事实，SystemAnchorLayer 消费进 Runtime 块）；</li>
+     *   <li>RAG → 拆 JSON {@code {text,source}} → {@code ragFragments}+{@code ragCitations}（带 citation），
+     *       畸形 JSON 兜底 raw 入 ragFragments、citation 空（②每步降级，不阻塞）；</li>
+     *   <li>COMPUTE → {@code context.toolResults}（简单计算，现状不变）。</li>
+     * </ul>
+     */
+    private void routeResults(PipelineContext context, List<ToolCallResult> results) {
+        for (ToolCallResult r : results) {
+            switch (r.category()) {
+                case RUNTIME -> context.runtimeFacts().add(r.content());
+                case RAG -> {
+                    Optional<PolicyFragment> parsed = PolicyFragment.fromJson(r.content());
+                    if (parsed.isPresent()) {
+                        context.ragFragments().add(parsed.get().text());
+                        context.ragCitations().add(parsed.get().source());
+                    } else {
+                        context.ragFragments().add(r.content()); // 兜底 raw（citation 空）
+                    }
+                }
+                case COMPUTE -> context.toolResults().add(r.content());
+            }
         }
     }
 

@@ -30,7 +30,9 @@ class ContextMergerTest {
 
     private ContextMerger newMerger() {
         return new ContextMerger(
-                new SystemAnchorLayer(registry, FIXED_CLOCK),
+                new SystemAnchorLayer(
+                        new SystemPromptAssembler(registry, SystemAnchorLayer.DEFAULT_SYSTEM_PROMPT),
+                        FIXED_CLOCK),
                 new ObjectiveDataLayer(),
                 new UserInstructionLayer(sanitizer));
     }

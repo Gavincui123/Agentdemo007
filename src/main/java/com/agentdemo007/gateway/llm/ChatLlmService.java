@@ -7,6 +7,7 @@ import com.agentdemo007.gateway.config.ModelMetadata;
 import com.agentdemo007.gateway.config.RouteRule;
 import com.agentdemo007.gateway.core.GatewayRequest;
 import com.agentdemo007.gateway.core.LlmResponse;
+import com.agentdemo007.gateway.core.StreamingReplyHandler;
 import com.agentdemo007.gateway.core.UnifiedModelGateway;
 import com.agentdemo007.gateway.exception.ModelSelectionException;
 import com.agentdemo007.gateway.selector.ModelSelector;
@@ -82,6 +83,34 @@ public class ChatLlmService {
      */
     public String chatRaw(String prompt, Intent intent) {
         return invoke(prompt, intent, disableThinkingFor(intent));
+    }
+
+    /**
+     * 流式生成（[[q2-token-streaming]]·不二次包裹，同 {@link #chatRaw}）：经 {@code gateway.stream} 主模型流式，
+     * 逐 token 经 {@link StreamingReplyHandler#onPartialResponse} 回调。意图驱动关思考同 {@code chatRaw}。
+     *
+     * <p>流式<b>主模型 only、无中途故障转移</b>；同步异常（无可用模型/预算超限/leaf 前置抛）→捕获转
+     * {@code handler.onError}，调用方（{@code OutputStep}）据此回退阻塞 {@code chatRaw}（有完整主备容灾）→韧性不丢。
+     * 与 {@link #chat} 的"意图驱动思考"正交：流式按意图定思考开关（非闲聊由 {@code thinkingEnabled} 定）。
+     */
+    public void chatRawStream(String prompt, Intent intent, StreamingReplyHandler handler) {
+        Optional<RouteRule> rule = center.routeFor(intent);
+        String primary;
+        try {
+            primary = resolvePrimary(intent, rule);
+        } catch (Throwable e) {
+            handler.onError(e); // 无可用模型等同步错→统一 onError（调用方回退阻塞）
+            return;
+        }
+        // 流式主模型 only，failover 不用于流式（无中途切备），传单主策略占位
+        FailoverPolicy failover = new FailoverPolicy.Builder(primary).build();
+        GatewayRequest request = new GatewayRequest(primary, prompt, maxTokens,
+                failover, center.flowControl(), disableThinkingFor(intent));
+        try {
+            gateway.stream(request, handler);
+        } catch (Throwable e) {
+            handler.onError(e); // 预算超限/leaf 前置抛→onError（调用方回退阻塞 chatRaw）
+        }
     }
 
     /**

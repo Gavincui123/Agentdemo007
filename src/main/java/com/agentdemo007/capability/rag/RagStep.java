@@ -1,5 +1,6 @@
 package com.agentdemo007.capability.rag;
 
+import com.agentdemo007.capability.plan.RoutePlan;
 import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.PipelineStep;
@@ -70,10 +71,20 @@ public class RagStep implements PipelineStep {
 
     @Override
     public StepOutcome process(PipelineContext context) {
-        // chit-chat 已由前置 KeywordTriageStep(@Order 150) 分诊 → 跳过 RAG（Proceed，非 Degrade）。
-        // 闲聊无需知识库，跳过RAG是正常非降级——此前误报"降级·系统仍答·RAG_SKIP"的根因（deg-004
-        // 适用于需要RAG却召回失败的意图；chit-chat 本就不该走RAG，跳过=正常Proceed）。
-        if (context.intent() == Intent.CHIT_CHAT) {
+        // #135 渐进消费·source 门控（[[routeplan-design]]）：routePlan 为真实 LLM 候选（source=
+        // LLM_WITH_POLICY_CONSTRAINTS）时按 needsRag 决策；DETERMINISTIC_FALLBACK/null 回退现有 Intent
+        // 逻辑——noop 测试/兜底候选不采信 routePlan，现有测试/旧行为不破。prod（llm.enabled=true）真
+        // route_model 产 LLM 候选 → 此处生效。knowledge_domains 缩范围 + DAG 串并行留后（运行时调度不在 plan）。
+        RoutePlan rp = context.routePlan();
+        if (rp != null && rp.source() == RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS) {
+            if (!rp.needsRag()) {
+                return new StepOutcome.Proceed(); // route 决策无需 RAG（正常跳过，非降级）
+            }
+            // route 决策需要 RAG → 走下方召回链
+        } else if (context.intent() == Intent.CHIT_CHAT) {
+            // chit-chat 已由前置 KeywordTriageStep(@Order 150) 分诊 → 跳过 RAG（Proceed，非 Degrade）。
+            // 闲聊无需知识库，跳过RAG是正常非降级——此前误报"降级·系统仍答·RAG_SKIP"的根因（deg-004
+            // 适用于需要RAG却召回失败的意图；chit-chat 本就不该走RAG，跳过=正常Proceed）。
             return new StepOutcome.Proceed();
         }
         String query = resolveQuery(context);

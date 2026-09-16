@@ -2,6 +2,8 @@ package com.agentdemo007.common.pipeline;
 
 import com.agentdemo007.common.degradation.DegradationPhraseCenter;
 import com.agentdemo007.common.degradation.DegradationScenario;
+import com.agentdemo007.common.progress.ProgressEmitter;
+import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.observability.AgentMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,13 +64,25 @@ public class PipelineOrchestrator implements PipelineExecutor {
 
     public PipelineResult run(PipelineContext context) {
         long start = System.nanoTime();
+        ProgressEmitter emitter = context.emitter(); // #136：NO_OP 默认；chatStream 注入 Sse 桥接
         try {
             for (PipelineStep step : steps) {
+                if (emitter.closed()) {
+                    // 协作式取消：SSE 已超时/断开（用户"停止对话"）→ 后续步骤不再执行（省 LLM 调用与配额）。
+                    // 进行中的单步自然结束；本结果仅入审计/持久化，前端已不可达、不再投递。
+                    log.info("检测到进度信道已关闭，取消后续步骤（步骤前断点）：next={}", step.name());
+                    metrics.recordOutcome(AgentMetrics.Outcome.SHORT_CIRCUIT, DegradationScenario.USER_CANCELLED);
+                    return PipelineResult.shortCircuit(phraseCenter.phrase(DegradationScenario.USER_CANCELLED),
+                            DegradationScenario.USER_CANCELLED);
+                }
+                emitter.emit(new ProgressEvent.StepStarted(step.name()));
                 StepOutcome outcome;
                 try {
                     outcome = step.process(context);
                 } catch (Exception e) {
                     log.error("步骤 {} 执行异常，收口到 INTERNAL 话术：{}", step.name(), e.getMessage(), e);
+                    emitter.emit(new ProgressEvent.StepFinished(step.name(),
+                            ProgressEvent.Outcome.EXCEPTION, DegradationScenario.INTERNAL));
                     StepOutcomeAuditor.auditException(context, step.name(), e.getMessage());
                     metrics.recordOutcome(AgentMetrics.Outcome.SHORT_CIRCUIT, DegradationScenario.INTERNAL);
                     return PipelineResult.shortCircuit(phraseCenter.phrase(DegradationScenario.INTERNAL),
@@ -76,18 +90,24 @@ public class PipelineOrchestrator implements PipelineExecutor {
                 }
                 if (outcome instanceof StepOutcome.ShortCircuit sc) {
                     log.warn("步骤 {} 触发短路：{}（零 LLM，跳过后续）", step.name(), sc.scenario());
+                    emitter.emit(new ProgressEvent.StepFinished(step.name(),
+                            ProgressEvent.Outcome.SHORT_CIRCUIT, sc.scenario()));
                     StepOutcomeAuditor.audit(context, step.name(), outcome);
                     metrics.recordOutcome(AgentMetrics.Outcome.SHORT_CIRCUIT, sc.scenario());
                     return PipelineResult.shortCircuit(phraseCenter.phrase(sc.scenario()), sc.scenario());
                 }
                 if (outcome instanceof StepOutcome.Degrade d) {
                     log.warn("步骤 {} 触发降级：{}（继续推进）", step.name(), d.scenario());
+                    emitter.emit(new ProgressEvent.StepFinished(step.name(),
+                            ProgressEvent.Outcome.DEGRADE, d.scenario()));
                     StepOutcomeAuditor.audit(context, step.name(), outcome);
                     metrics.recordDegradation(d.scenario());
                     continue;
                 }
                 // Proceed / Retry：推进下一步（线性模式不图循环，Retry 在此等价 Proceed，§5.13）
                 // —— 重试语义由各 step 内部自理（如 ToolExecutor 的自纠正循环）
+                emitter.emit(new ProgressEvent.StepFinished(step.name(),
+                        ProgressEvent.Outcome.PROCEED, null));
             }
             return terminal(context);
         } finally {

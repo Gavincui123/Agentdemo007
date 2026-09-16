@@ -33,8 +33,14 @@ logs/
 # CodeGraph index (regenerable)
 .codegraph/
 
+.dep-map/
+.docs/blog/
+.docs/plans/
+.docs/superpowers/
+
 # Spring Boot repackaged backup
 *.original
 
 # Misc
 HELP.md
+

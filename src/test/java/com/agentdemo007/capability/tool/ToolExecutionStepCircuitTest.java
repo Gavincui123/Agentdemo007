@@ -23,9 +23,9 @@ class ToolExecutionStepCircuitTest {
     @Test
     void circuitOpenException_shortCircuitsToToolFailure() {
         // stub 执行器：直接抛 ToolCircuitOpenException（模拟断路器 OPEN）
-        ToolCallExecutor throwingExecutor = new ToolCallExecutor(null, null, 0, List.of(), Map.of()) {
+        ToolCallExecutor throwingExecutor = new ToolCallExecutor(null, null, 0, List.of(), Map.of(), Map.of()) {
             @Override
-            public List<String> execute(String query) {
+            public List<ToolCallResult> execute(String query) {
                 throw new ToolCircuitOpenException("flaky");
             }
         };

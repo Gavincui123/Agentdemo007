@@ -1,5 +1,7 @@
 package com.agentdemo007.capability.hitl;
 
+import com.agentdemo007.capability.plan.RoutePlan;
+import com.agentdemo007.capability.plan.RoutePlanCandidate;
 import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.PipelineStep;
@@ -58,7 +60,18 @@ public class HitlStep implements PipelineStep {
     public StepOutcome process(PipelineContext context) {
         String query = resolveQuery(context);
         Intent intent = context.intent();
-        if (!handler.needsReview(query, intent)) {
+        // #135 渐进消费·source 门控（[[routeplan-design]]）：routePlan 为真实 LLM 候选时按 fallbackPolicy
+        // 决策（TRANSFER_TO_HUMAN→需人工）；DETERMINISTIC_FALLBACK/null 回退现有 handler.needsReview
+        // （noop 测试/兜底候选不采信 routePlan，现有行为不破）。工单/决议仍经 handler.buildRequest +
+        // decision.decide（只替换 needsReview 判定源，不替换建单/决议链路）。
+        RoutePlan rp = context.routePlan();
+        boolean needsReview;
+        if (rp != null && rp.source() == RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS) {
+            needsReview = (rp.fallbackPolicy() == RoutePlanCandidate.FallbackPolicy.TRANSFER_TO_HUMAN);
+        } else {
+            needsReview = handler.needsReview(query, intent);
+        }
+        if (!needsReview) {
             metrics.recordHitl(false);
             return new StepOutcome.Proceed();
         }

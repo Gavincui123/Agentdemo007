@@ -22,6 +22,19 @@ const isAssistant = computed(() => props.message.role === 'assistant')
 const html = computed(() => (isAssistant.value ? renderMarkdown(props.message.content) : ''))
 
 const showTyping = computed(() => props.typing === true && !props.message.content)
+
+/** 计时展示（后端口径）：毫秒原样，秒 1 位小数。 */
+function fmtMs(ms?: number | null): string {
+  if (ms == null) return ''
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
+}
+
+const timingText = computed(() => {
+  if (props.message.totalMs == null) return ''
+  const total = fmtMs(props.message.totalMs)
+  const first = props.message.firstTokenMs != null ? `（首字 ${fmtMs(props.message.firstTokenMs)}）` : ''
+  return `耗时 ${total}${first}`
+})
 </script>
 
 <template>
@@ -32,9 +45,10 @@ const showTyping = computed(() => props.typing === true && !props.message.conten
       <div v-if="showTyping" class="typing"><span /><span /><span /></div>
       <div v-else class="msg__markdown" v-html="html" />
       <div v-if="message.degraded" class="msg__tag">降级·系统仍答</div>
-      <div v-if="message.traceId || message.scenario" class="msg__meta">
+      <div v-if="message.traceId || message.scenario || timingText" class="msg__meta">
         <span v-if="message.traceId" class="mono">trace:{{ message.traceId }}</span>
         <span v-if="message.scenario" class="mono msg__scenario">·{{ message.scenario }}</span>
+        <span v-if="timingText" class="mono msg__timing">·{{ timingText }}</span>
       </div>
       <div v-if="message.citations && message.citations.length" class="msg__citations">
         <div class="msg__citations-label">参考来源 · 可追溯不等于绝对正确</div>
@@ -150,6 +164,9 @@ const showTyping = computed(() => props.typing === true && !props.message.conten
   opacity: 0.8;
 }
 .msg__scenario {
+  margin-left: 4px;
+}
+.msg__timing {
   margin-left: 4px;
 }
 

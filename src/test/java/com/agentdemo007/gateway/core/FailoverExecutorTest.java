@@ -1,5 +1,9 @@
 package com.agentdemo007.gateway.core;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.agentdemo007.gateway.config.FailoverPolicy;
 import com.agentdemo007.gateway.config.FlowControlPolicy;
 import com.agentdemo007.gateway.exception.LlmUnavailableException;
@@ -16,6 +20,7 @@ import com.agentdemo007.resilience.TransientException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -144,6 +149,34 @@ class FailoverExecutorTest {
         assertThat(registry.timer("agent.gateway.call.duration").count()).isEqualTo(5L); // 2 成功 + 3 失败
         assertThat(registry.counter("agent.failover", "outcome", "success").count()).isEqualTo(1.0); // 场景2
         assertThat(registry.counter("agent.failover", "outcome", "exhausted").count()).isEqualTo(1.0); // 场景3
+    }
+
+    @Test
+    void logsLlmEgressDuration_onSuccess() {
+        // [[q2-llm-egress-timing]] 日志埋点（用户钦定"需要日志埋点排查"延迟出在哪）：
+        // FailoverExecutor 是全部 LLM 出站（ChatLlmService.chat/chatRaw/decide + 工具派发经
+        // GatewayChatModel.doChat→gateway.invoke）的唯一收口点；millis 已在此算好进 metrics
+        // （agent.gateway.call.duration）但未进人读日志。成功路径（原静默：主模型一次成功既不 warn 也不 info）
+        // 须额外打一行 INFO 含 modelId + durMs，供 tail 日志按调用定位各段耗时。
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Logger logger = (Logger) LoggerFactory.getLogger(FailoverExecutor.class);
+        logger.addAppender(appender);
+        try {
+            ScriptedExecutor exec = new ScriptedExecutor(new LlmResponse("primary", "ok", 1));
+            executor.execute(requestWithFailover("primary", "fb1"), exec);
+
+            boolean logged = appender.list.stream()
+                    .filter(e -> e.getLevel() == Level.INFO)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .anyMatch(m -> m.contains("primary") && m.contains("durMs"));
+            assertThat(logged)
+                    .as("成功路径须埋点 LLM 出站耗时（INFO 含 modelId + durMs）")
+                    .isTrue();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     // ---- helpers ----

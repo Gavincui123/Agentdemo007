@@ -189,4 +189,21 @@ class PipelineContextTest {
         assertThat(ctx.auditEvents().get(0).type()).isEqualTo(AuditEventType.INJECTION);
         assertThat(ctx.auditEvents().get(1).type()).isEqualTo(AuditEventType.HITL);
     }
+
+    // ---- 并发合并产物载体（[[p0-intent-switch-clarify-design]] §7）----
+
+    @Test
+    void concurrentReply_defaultsNull() {
+        assertThat(new PipelineContext("s1", "x").concurrentReply()).isNull();
+    }
+
+    @Test
+    void concurrentReply_setGet() {
+        PipelineContext ctx = new PipelineContext("s1", "x");
+        ConcurrentReply cr = new ConcurrentReply(
+                java.util.concurrent.CompletableFuture.completedFuture("退款已受理"),
+                List.of(new ChatMessage.System("只答商品")), "product_query");
+        ctx.setConcurrentReply(cr);
+        assertThat(ctx.concurrentReply()).isSameAs(cr);
+    }
 }

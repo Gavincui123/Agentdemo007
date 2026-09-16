@@ -4,11 +4,14 @@ import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.PipelineStep;
 import com.agentdemo007.common.pipeline.StepOutcome;
+import com.agentdemo007.common.progress.ProgressEvent;
 import org.bsc.langgraph4j.action.AsyncNodeAction;
 import org.bsc.langgraph4j.state.AgentState;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -182,5 +185,77 @@ class GraphNodeTest {
         assertThat(outcome).isInstanceOf(StepOutcome.ShortCircuit.class);
         assertThat(((StepOutcome.ShortCircuit) outcome).scenario())
                 .isEqualTo(DegradationScenario.INTERNAL);
+    }
+
+    // ---- #136 图模式进度对齐线性（[[routeplan-design]]）：每节点 emit StepStarted(前) + StepFinished(outcome→scenario)(后) ----
+
+    @Test
+    void asAsyncNodeAction_emitsStartedThenFinishedProceed() throws Exception {
+        GraphNode node = new GraphNode(new NamedStep("RagStep", new StepOutcome.Proceed()));
+        PipelineContext context = new PipelineContext("trace", "sess", "hi");
+        List<ProgressEvent> events = new ArrayList<>();
+        context.setEmitter(events::add);
+        AgentState state = stateWith(context);
+
+        node.asAsyncNodeAction().apply(state).join();
+
+        // 图模式进度对齐线性：StepStarted(前) + StepFinished(PROCEED, null scenario)(后)
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ProgressEvent.StepStarted.class);
+        assertThat(((ProgressEvent.StepStarted) events.get(0)).step()).isEqualTo("RagStep");
+        ProgressEvent.StepFinished finished = (ProgressEvent.StepFinished) events.get(1);
+        assertThat(finished.step()).isEqualTo("RagStep");
+        assertThat(finished.outcome()).isEqualTo(ProgressEvent.Outcome.PROCEED);
+        assertThat(finished.scenario()).isNull();
+    }
+
+    @Test
+    void asAsyncNodeAction_emitsFinishedDegradeWithScenario() throws Exception {
+        GraphNode node = new GraphNode(
+                new NamedStep("RagStep", new StepOutcome.Degrade(DegradationScenario.RAG_SKIP)));
+        PipelineContext context = new PipelineContext("trace", "sess", "hi");
+        List<ProgressEvent> events = new ArrayList<>();
+        context.setEmitter(events::add);
+        AgentState state = stateWith(context);
+
+        node.asAsyncNodeAction().apply(state).join();
+
+        ProgressEvent.StepFinished finished = (ProgressEvent.StepFinished) events.get(1);
+        assertThat(finished.outcome()).isEqualTo(ProgressEvent.Outcome.DEGRADE);
+        assertThat(finished.scenario()).isEqualTo(DegradationScenario.RAG_SKIP);
+    }
+
+    @Test
+    void asAsyncNodeAction_emitsFinishedShortCircuitWithScenario() throws Exception {
+        GraphNode node = new GraphNode(
+                new NamedStep("InjectionStep",
+                        new StepOutcome.ShortCircuit(DegradationScenario.INJECTION)));
+        PipelineContext context = new PipelineContext("trace", "sess", "hi");
+        List<ProgressEvent> events = new ArrayList<>();
+        context.setEmitter(events::add);
+        AgentState state = stateWith(context);
+
+        node.asAsyncNodeAction().apply(state).join();
+
+        ProgressEvent.StepFinished finished = (ProgressEvent.StepFinished) events.get(1);
+        assertThat(finished.outcome()).isEqualTo(ProgressEvent.Outcome.SHORT_CIRCUIT);
+        assertThat(finished.scenario()).isEqualTo(DegradationScenario.INJECTION);
+    }
+
+    @Test
+    void asAsyncNodeAction_emitsFinishedExceptionOnStepThrow() throws Exception {
+        GraphNode node = new GraphNode(new ThrowingStep("BadStep", "boom"));
+        PipelineContext context = new PipelineContext("trace", "sess", "hi");
+        List<ProgressEvent> events = new ArrayList<>();
+        context.setEmitter(events::add);
+        AgentState state = stateWith(context);
+
+        node.asAsyncNodeAction().apply(state).join();
+
+        // 异常路径：StepStarted(前) + StepFinished(EXCEPTION, INTERNAL)(后)——图模式进度不漏异常终态
+        assertThat(events).hasSize(2);
+        ProgressEvent.StepFinished finished = (ProgressEvent.StepFinished) events.get(1);
+        assertThat(finished.outcome()).isEqualTo(ProgressEvent.Outcome.EXCEPTION);
+        assertThat(finished.scenario()).isEqualTo(DegradationScenario.INTERNAL);
     }
 }

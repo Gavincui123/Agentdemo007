@@ -5,29 +5,33 @@ import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.common.pipeline.PipelineOrchestrator;
 import com.agentdemo007.common.pipeline.PipelineResult;
+import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.common.response.UnifiedResponse;
 import com.agentdemo007.persistence.mq.AuditProducer;
 import com.agentdemo007.persistence.mq.CapturingMessagePublisher;
 import com.agentdemo007.persistence.mq.ChatTurnFinalizer;
 import com.agentdemo007.persistence.mq.HistoryPersistProducer;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.core.task.SyncTaskExecutor;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import tools.jackson.databind.ObjectMapper;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 对话控制器单测（Phase 12·对外收口终端 + Phase 13 异步持久化接线）。
+ * 对话控制器单测（Phase 12·对外收口终端 + Phase 13 异步持久化接线 + #136 SSE 真流式）。
  *
  * <p>覆盖 §5.12 终端翻译：{@link PipelineResult} → {@link UnifiedResponse}。
  * <ul>
  *   <li>同步 /chat：正常结果→success(reply)；降级结果→仍 success（话术短路不暴露技术码，HTTP 200），
  *       但 data 携带 degraded/scenario 供客户端可选展示；sessionId 缺省自动生成、提供则原样回传。</li>
- *   <li>SSE /chat/stream：单事件 text/event-stream（真实流式延后），data 行携带同样的 ChatResponse。</li>
+ *   <li>SSE /chat/stream：返回 {@link SseEmitter}，工作线程跑流水线 + 进度事件实时 flush + 终端 reply_ready
+ *       （#136 富事件真流式）。{@link #runToSse_emitsStepProgressThenReplyReady} 直接驱动工作线程体
+ *       （{@link ChatController#runToSse} 包级 seam），用 {@link CapturingSseEmitter} 截获 send 验证多事件时序。</li>
  * </ul>
  * <p>桩 {@link PipelineOrchestrator} 固定产出，聚焦控制器翻译逻辑，不依赖真实流水线。
  * Phase 13 接线验证：终端后置钩子 {@link ChatTurnFinalizer} 经 {@link CapturingMessagePublisher} 假替换 seam
@@ -48,7 +52,7 @@ class ChatControllerTest {
         };
         ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
                 new HistoryPersistProducer(publisher), new AuditProducer(publisher));
-        return new ChatController(stub, finalizer, objectMapper);
+        return new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor());
     }
 
     @Test
@@ -104,17 +108,97 @@ class ChatControllerTest {
     }
 
     @Test
-    void chatStream_returnsSseSingleEvent() {
+    void runToSse_emitsStepProgressThenReplyReady() {
+        // 桩：run 时经 context.emitter() 发进度事件（编排器/各步在真流水线会发），终端返 ok("您好")
+        PipelineOrchestrator stub = new PipelineOrchestrator(List.of(), new DegradationPhraseCenter()) {
+            @Override
+            public PipelineResult run(PipelineContext context) {
+                context.emitter().emit(new ProgressEvent.StepStarted("triage"));
+                context.emitter().emit(new ProgressEvent.StepFinished("triage", ProgressEvent.Outcome.PROCEED, null));
+                return PipelineResult.ok("您好");
+            }
+        };
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher));
+        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor());
+
+        CapturingSseEmitter sse = new CapturingSseEmitter();
+        controller.runToSse(sse, new ChatRequest("sess-2", "你好"));
+
+        // 进度事件（step_started/step_finished）+ 终端 reply_ready 全经 SseEmitter.send 截获；
+        // reply_ready 负载 = ChatResponse JSON（含 reply "您好" + sessionId "sess-2"）
+        String all = String.join("", sse.captured);
+        assertThat(all).contains("step_started");
+        assertThat(all).contains("step_finished");
+        assertThat(all).contains("reply_ready");
+        assertThat(all).contains("您好");
+        assertThat(all).contains("sess-2");
+    }
+
+    @Test
+    void timeoutFallback_sendsDegradedReplyReadyAndCompletes() {
+        // 超时治理：SSE 超时后 onTimeout 补发 reply_ready（PIPELINE_TIMEOUT 话术，终态与正常路径同形）+ complete
         ChatController controller = controller(PipelineResult.ok("您好"));
+        CapturingSseEmitter sse = new CapturingSseEmitter();
 
-        ResponseEntity<String> resp = controller.chatStream(new ChatRequest("sess-2", "你好"));
+        controller.sendTimeoutFallback(sse, "sess-t");
 
-        assertThat(resp.getStatusCode().value()).isEqualTo(HttpStatus.OK.value());
-        assertThat(resp.getHeaders().getContentType()).isEqualTo(MediaType.TEXT_EVENT_STREAM);
-        assertThat(resp.getBody()).startsWith("data:");
-        assertThat(resp.getBody()).contains("您好");
-        assertThat(resp.getBody()).contains("sess-2");
-        assertThat(resp.getBody()).endsWith("\n\n");
+        String all = String.join("", sse.captured);
+        assertThat(all).contains("reply_ready");
+        assertThat(all).contains(DegradationScenario.PIPELINE_TIMEOUT.phrase());
+        assertThat(all).contains("PIPELINE_TIMEOUT");
+        assertThat(all).contains("sess-t");
+        assertThat(all).contains("true"); // degraded=true
+        assertThat(all).contains("PIPELINE_TIMEOUT");
+        assertThat(all).contains("totalMs"); // 超时兜底也带计时
+        assertThat(sse.completed).isTrue();
+    }
+
+    @Test
+    void runToSse_emitsFirstTokenAndTotalTimingInReplyReady() {
+        // 响应时间统计：桩发 TokenChunk → firstTokenMs 记录；终端 reply_ready JSON 带 totalMs + firstTokenMs
+        PipelineOrchestrator stub = new PipelineOrchestrator(List.of(), new DegradationPhraseCenter()) {
+            @Override
+            public PipelineResult run(PipelineContext context) {
+                context.emitter().emit(new ProgressEvent.TokenChunk("你"));
+                context.emitter().emit(new ProgressEvent.TokenChunk("好"));
+                return PipelineResult.ok("你好");
+            }
+        };
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher));
+        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor());
+
+        CapturingSseEmitter sse = new CapturingSseEmitter();
+        controller.runToSse(sse, new ChatRequest("sess-timing", "你好"));
+
+        String all = String.join("", sse.captured);
+        assertThat(all).contains("reply_ready");
+        assertThat(all).contains("\"totalMs\"");
+        assertThat(all).contains("\"firstTokenMs\""); // TokenChunk 已发 → 首字计时非 null
+    }
+
+    @Test
+    void runToSse_deadFlagSet_skipsTerminalReplyReady() {
+        // 超时治理：流水线完成时 SSE 已超时（dead 置位）→ 晚到的成功不再投递（不撞 already completed）
+        PipelineOrchestrator stub = new PipelineOrchestrator(List.of(), new DegradationPhraseCenter()) {
+            @Override
+            public PipelineResult run(PipelineContext context) {
+                context.emitter().emit(new ProgressEvent.StepStarted("triage"));
+                return PipelineResult.ok("您好");
+            }
+        };
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher));
+        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor());
+
+        CapturingSseEmitter sse = new CapturingSseEmitter();
+        controller.runToSse(sse, new ChatRequest("sess-d", "你好"), "sess-d",
+                new java.util.concurrent.atomic.AtomicBoolean(true));
+
+        // dead 置位：进度事件静默丢弃 + 终端 reply_ready 不发 + 不 complete（超时话术已由 onTimeout 补发）
+        assertThat(sse.captured).isEmpty();
+        assertThat(sse.completed).isFalse();
     }
 
     @Test
@@ -126,5 +210,25 @@ class ChatControllerTest {
         // 终端后置钩子被触发：会话持久化路由键收到 ChatTurnEvent（停 MQ→seam 假捕获，不连 broker→主接口 200）
         assertThat(publisher.publishCount()).isGreaterThanOrEqualTo(1);
         assertThat(publisher.published().get(0).getKey()).isEqualTo("session.persist");
+    }
+
+    /** 截获 {@link SseEmitter#send(SseEventBuilder)}：build() 返回 Set<DataWithMediaType>，逐项取 data 累积。 */
+    static final class CapturingSseEmitter extends SseEmitter {
+        final List<String> captured = new ArrayList<>();
+        boolean completed = false;
+
+        @Override
+        public void send(SseEmitter.SseEventBuilder builder) {
+            for (ResponseBodyEmitter.DataWithMediaType item : builder.build()) {
+                if (item.getData() != null) {
+                    captured.add(item.getData().toString());
+                }
+            }
+        }
+
+        @Override
+        public void complete() {
+            completed = true;
+        }
     }
 }

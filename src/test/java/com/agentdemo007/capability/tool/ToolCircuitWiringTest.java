@@ -33,12 +33,16 @@ class ToolCircuitWiringTest {
     private ToolCircuitBreaker toolCircuitBreaker;
 
     @Test
-    void wiredBeans_toolSliceReady_threeToolsPickedUp() {
+    void wiredBeans_toolSliceReady_tenToolsPickedUp() {
         assertThat(toolCallExecutor).as("ToolCallExecutor bean 装配就绪").isNotNull();
         assertThat(toolCircuitBreaker).as("ToolCircuitBreaker bean 装配就绪").isNotNull();
+        // [[business-tools-workflow-dag]] §2.2：4 计算 @Tool + 6 业务 @Tool（3 RUNTIME 外部系统 + 3 RAG 政策）= 10
         assertThat(toolSchemaProvider.allSchemas())
-                .as("triangle/circle/multiplication/arithmetic 四个 @Tool 均被反射拾起（按方法名）")
+                .as("10 个 @Tool 均被反射拾起（4 计算 + 3 RUNTIME 外部系统 + 3 RAG 政策，按方法名）")
                 .extracting(ToolSpecification::name)
-                .containsExactlyInAnyOrder("triangleArea", "circleArea", "table", "calculate");
+                .containsExactlyInAnyOrder(
+                        "triangleArea", "circleArea", "table", "calculate",
+                        "queryOrder", "queryUser", "queryProduct",
+                        "queryReturnPolicy", "queryRefundPolicy", "queryPromotionPolicy");
     }
 }

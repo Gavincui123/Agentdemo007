@@ -86,14 +86,23 @@ public class FailoverExecutor {
                         () -> executor.execute(new LlmRequest(modelId, request.prompt(), request.maxTokens(),
                                 request.disableThinking(), request.messages(), request.tools())),
                         retryPolicy);
-                metrics.recordModelCall(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start), true);
+                long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+                metrics.recordModelCall(millis, true);
+                // [[q2-llm-egress-timing]] 日志埋点：人读日志打一行（modelId + 耗时 + 成败 + attempt），
+                // 供 tail 日志按调用定位各段延迟。millis 与 metrics.recordModelCall 同源（含同模型退避睡眠，
+                // 单 HTTP 调用场景即该调用墙钟）。覆盖全部 LLM 出站（chat/chatRaw/decide + 工具派发经
+                // GatewayChatModel.doChat→gateway.invoke→本方法），一处收口不散落。
+                log.info("LLM出站 model={} durMs={} ok=true attempt={}/{}", modelId, millis, attempt + 1, maxAttempts);
                 if (attempt > 0) {
                     log.warn("故障转移成功：主={} 备选={} 尝试={}", request.primaryModelId(), modelId, attempt + 1);
                     metrics.recordFailover(false); // 成功转移（非候选耗尽）
                 }
                 return response;
             } catch (RuntimeException e) {
-                metrics.recordModelCall(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start), false);
+                long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+                metrics.recordModelCall(millis, false);
+                log.info("LLM出站 model={} durMs={} ok=false attempt={}/{} reason={}",
+                        modelId, millis, attempt + 1, maxAttempts, e.getMessage());
                 Decision d = triage.triage(e).decision();
                 if (d == Decision.AUDIT_AND_FAIL || d == Decision.FEEDBACK_TO_LLM) {
                     throw e; // 致命/工具错：不故障转移，向上传播

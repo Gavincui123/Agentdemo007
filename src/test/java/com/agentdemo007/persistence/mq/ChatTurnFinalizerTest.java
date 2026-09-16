@@ -130,4 +130,43 @@ class ChatTurnFinalizerTest {
         assertThat(registry.counter("agent.mq", "channel", "history", "success", "false").count()).isEqualTo(1.0);
         assertThat(registry.counter("agent.mq", "channel", "audit", "success", "true").count()).isEqualTo(1.0);
     }
+
+    @Test
+    void finalizeTurn_appendsUserAndAiToSessionCache() {
+        // 修复接线：SessionCacheService.append 此前零调用（历史只读不写，每轮都当"新建会话"）——
+        // 终端钩子负责把 [User(rawInput), Ai(finalReply)] 写入会话缓存
+        CapturingMessagePublisher publisher = new CapturingMessagePublisher();
+        com.agentdemo007.session.cache.SessionCacheService cache =
+                org.mockito.Mockito.mock(com.agentdemo007.session.cache.SessionCacheService.class);
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher),
+                AgentMetrics.NO_OP, cache);
+
+        PipelineContext context = new PipelineContext("trace-5", "sess-5", "查订单");
+        finalizer.finalizeTurn(context, PipelineResult.ok("订单已查到"));
+
+        org.mockito.Mockito.verify(cache).append(org.mockito.ArgumentMatchers.eq("sess-5"),
+                org.mockito.ArgumentMatchers.argThat(msgs -> msgs.size() == 2
+                        && msgs.get(0) instanceof com.agentdemo007.session.model.ChatMessage.User
+                        && msgs.get(0).content().equals("查订单")
+                        && msgs.get(1) instanceof com.agentdemo007.session.model.ChatMessage.Ai
+                        && msgs.get(1).content().equals("订单已查到")));
+    }
+
+    @Test
+    void finalizeTurn_userCancelled_skipsHistoryAppend() {
+        // 用户"停止对话"（USER_CANCELLED，未产出真实回复）→ 不写入会话历史
+        CapturingMessagePublisher publisher = new CapturingMessagePublisher();
+        com.agentdemo007.session.cache.SessionCacheService cache =
+                org.mockito.Mockito.mock(com.agentdemo007.session.cache.SessionCacheService.class);
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher),
+                AgentMetrics.NO_OP, cache);
+
+        PipelineContext context = new PipelineContext("trace-6", "sess-6", "查订单");
+        finalizer.finalizeTurn(context, com.agentdemo007.common.pipeline.PipelineResult.shortCircuit(
+                "已停止本轮处理。", com.agentdemo007.common.degradation.DegradationScenario.USER_CANCELLED));
+
+        org.mockito.Mockito.verifyNoInteractions(cache);
+    }
 }

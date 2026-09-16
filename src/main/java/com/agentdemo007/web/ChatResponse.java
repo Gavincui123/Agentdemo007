@@ -18,7 +18,15 @@ import java.util.List;
  * @param degraded  是否经历降级/短路。
  * @param scenario  降级场景名（无降级为 {@code null}）。
  * @param citations RAG 命中来源引用（来源+摘要串）；无 RAG 命中或话术短路时为空列表。
+ * @param totalMs   本轮总耗时（后端收到请求→终端回复就绪，毫秒）；超时兜底话术≈SSE 超时值。
+ * @param firstTokenMs 首个流式 token 相对请求的耗时（毫秒）；同步 /chat 与无流式 token 时为 {@code null}。
  */
 public record ChatResponse(String sessionId, String reply, boolean degraded, String scenario,
-                           List<String> citations) {
+                           List<String> citations, long totalMs, Long firstTokenMs) {
+
+    /** 兼容构造（无计时）：既有测试/调用点零改动。 */
+    public ChatResponse(String sessionId, String reply, boolean degraded, String scenario,
+                        List<String> citations) {
+        this(sessionId, reply, degraded, scenario, citations, 0L, null);
+    }
 }

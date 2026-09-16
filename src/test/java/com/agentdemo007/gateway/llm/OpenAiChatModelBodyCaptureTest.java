@@ -1,16 +1,23 @@
 package com.agentdemo007.gateway.llm;
 
+import com.agentdemo007.capability.business.OrderQueryService;
+import com.agentdemo007.capability.tool.OrderQueryTool;
+import com.agentdemo007.capability.tool.ToolSchemaProvider;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.http.client.HttpClient;
 import dev.langchain4j.http.client.HttpClientBuilder;
 import dev.langchain4j.http.client.HttpRequest;
 import dev.langchain4j.http.client.SuccessfulHttpResponse;
 import dev.langchain4j.http.client.sse.ServerSentEventListener;
 import dev.langchain4j.http.client.sse.ServerSentEventParser;
+import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiChatRequestParameters;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -109,5 +116,84 @@ class OpenAiChatModelBodyCaptureTest {
         assertThat(client.capturedBody).contains("false");
         // modelName→请求体（证模型名透传）
         assertThat(client.capturedBody).contains("Qwen/Qwen3-14B");
+    }
+
+    /**
+     * 诊断（2026-09-12）：捕 tools 请求体，对照 SF 官方 API 手册排查 T1-T3 的 {@code 20015 "parameter invalid"}。
+     * 真 SF 真打 Qwen3-14B+enable_thinking+tools→20015；纯 chat+enable_thinking→GREEN
+     * （{@link OpenAiChatModelSiliconFlowSmokeTest}）。用户纠正：Qwen3-14B 支持 FC（官方 API 手册 tools 为
+     * 通用 OpenAI 兼容参）。故用假 transport 捕 LC4j 全序列化请求体，肉眼/断言排查是否有 SF 拒收字段
+     * （如 {@code strict} / 多余 schema 字段），并对比"带 enable_thinking"与"仅 tools"两体差异。无网络无 key 恒 GREEN。
+     */
+    @Test
+    void toolsRequestBody_capture_diagnostic() {
+        ToolSchemaProvider schemas = new ToolSchemaProvider(List.of(
+                new OrderQueryTool(new OrderQueryService())));
+        List<ToolSpecification> specs = schemas.allSchemas();
+        assertThat(specs).isNotEmpty();
+
+        // 体 A：tools + enable_thinking（复刻 T1-T3 失败请求）
+        CapturingHttpClient clientA = new CapturingHttpClient();
+        OpenAiChatModel modelA = OpenAiChatModel.builder()
+                .baseUrl("https://api.siliconflow.cn/v1")
+                .apiKey("dummy")
+                .modelName("Qwen/Qwen3-14B")
+                .httpClientBuilder(new CapturingHttpClientBuilder(clientA))
+                .build();
+        OpenAiChatRequestParameters paramsA = OpenAiChatRequestParameters.builder()
+                .customParameters(Map.of("enable_thinking", false))
+                .toolSpecifications(specs)
+                .build();
+        modelA.doChat(ChatRequest.builder()
+                .messages(new UserMessage("查订单 ORD-001"))
+                .parameters(paramsA)
+                .build());
+        System.out.println("=== DIAG BODY A (Qwen3-14B + enable_thinking=false + tools) ===");
+        System.out.println(clientA.capturedBody);
+
+        // 体 B：仅 tools（不带 enable_thinking——隔离 enable_thinking 嫌疑）
+        CapturingHttpClient clientB = new CapturingHttpClient();
+        OpenAiChatModel modelB = OpenAiChatModel.builder()
+                .baseUrl("https://api.siliconflow.cn/v1")
+                .apiKey("dummy")
+                .modelName("Qwen/Qwen3-14B")
+                .httpClientBuilder(new CapturingHttpClientBuilder(clientB))
+                .build();
+        OpenAiChatRequestParameters paramsB = OpenAiChatRequestParameters.builder()
+                .toolSpecifications(specs)
+                .build();
+        modelB.doChat(ChatRequest.builder()
+                .messages(new UserMessage("查订单 ORD-001"))
+                .parameters(paramsB)
+                .build());
+        System.out.println("=== DIAG BODY B (Qwen3-14B + tools, NO enable_thinking) ===");
+        System.out.println(clientB.capturedBody);
+
+        // 体 C：tools + enable_thinking + modelName（修复候选——补 modelName 防 model 字段缺失）
+        CapturingHttpClient clientC = new CapturingHttpClient();
+        OpenAiChatModel modelC = OpenAiChatModel.builder()
+                .baseUrl("https://api.siliconflow.cn/v1")
+                .apiKey("dummy")
+                .modelName("Qwen/Qwen3-14B")
+                .httpClientBuilder(new CapturingHttpClientBuilder(clientC))
+                .build();
+        OpenAiChatRequestParameters paramsC = OpenAiChatRequestParameters.builder()
+                .modelName("Qwen/Qwen3-14B") // 修复：per-request params 覆盖 default params 致 model 丢失→须显式带
+                .customParameters(Map.of("enable_thinking", false))
+                .toolSpecifications(specs)
+                .build();
+        modelC.doChat(ChatRequest.builder()
+                .messages(new UserMessage("查订单 ORD-001"))
+                .parameters(paramsC)
+                .build());
+        System.out.println("=== DIAG BODY C (Qwen3-14B + modelName + enable_thinking + tools) ===");
+        System.out.println(clientC.capturedBody);
+
+        assertThat(clientA.capturedBody).contains("\"tools\"");
+        assertThat(clientB.capturedBody).contains("\"tools\"");
+        // 坐实根因：A/B（未带 modelName）body 缺 "model" 字段；C（带 modelName）body 有 "model" + 模型名
+        assertThat(clientA.capturedBody).doesNotContain("\"model\"");
+        assertThat(clientC.capturedBody).contains("\"model\"");
+        assertThat(clientC.capturedBody).contains("Qwen/Qwen3-14B");
     }
 }

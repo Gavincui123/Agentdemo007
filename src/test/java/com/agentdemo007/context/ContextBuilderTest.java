@@ -31,7 +31,10 @@ class ContextBuilderTest {
     /** 用真实三层构建的 merger 验证主路径端到端。 */
     private ContextMerger realMerger() {
         return new ContextMerger(
-                new SystemAnchorLayer(new LocalPromptSource(), FIXED_CLOCK),
+                new SystemAnchorLayer(
+                        new SystemPromptAssembler(new LocalPromptSource(),
+                                SystemAnchorLayer.DEFAULT_SYSTEM_PROMPT),
+                        FIXED_CLOCK),
                 new ObjectiveDataLayer(),
                 new UserInstructionLayer(new PromptSanitizer()));
     }

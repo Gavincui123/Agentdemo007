@@ -9,6 +9,7 @@ import com.agentdemo007.gateway.config.RouteRule;
 import com.agentdemo007.gateway.core.LlmRequest;
 import com.agentdemo007.gateway.core.LlmResponse;
 import com.agentdemo007.gateway.core.ModelExecutor;
+import com.agentdemo007.gateway.core.StreamingReplyHandler;
 import com.agentdemo007.gateway.core.TokenBudgetChecker;
 import com.agentdemo007.gateway.core.UnifiedModelGateway;
 import com.agentdemo007.gateway.core.FailoverExecutor;
@@ -18,6 +19,7 @@ import com.agentdemo007.intent.Intent;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -169,6 +171,47 @@ class ChatLlmServiceTest {
         assertThat(exec.lastRequest.disableThinking()).isTrue(); // 决策调用恒关，不受开关影响
     }
 
+    // ---- [[q2-token-streaming]] 流式 chatRawStream：经 gateway.stream 主模型流式（无中途故障转移）----
+
+    @Test
+    void chatRawStream_resolvesPrimaryAndStreamsTokensViaGateway() {
+        CapturingExecutor exec = new CapturingExecutor(); // stream override 逐 token 回调
+        ChatLlmService svc = service(exec, oneModel("m1"), true); // thinkingEnabled=true
+        List<String> tokens = new ArrayList<>();
+        int[] completedTokens = {0};
+        StreamingReplyHandler handler = new StreamingReplyHandler() {
+            @Override public void onPartialResponse(String token) { tokens.add(token); }
+            @Override public void onCompleteResponse(String fullReply, int tokens) { completedTokens[0] = tokens; }
+            @Override public void onError(Throwable error) { }
+        };
+
+        svc.chatRawStream("生成回复", Intent.REASONING, handler); // 非闲聊 + thinkingEnabled=true → 开思考
+
+        assertThat(tokens).containsExactly("tok-A", "tok-B"); // 逐 token 透传（经 gateway.stream→executor.stream）
+        assertThat(exec.lastRequest.modelId()).isEqualTo("m1"); // 解析主模型
+        assertThat(exec.lastRequest.disableThinking()).isFalse(); // REASONING + thinkingEnabled=true → 开思考
+        assertThat(completedTokens[0]).isEqualTo(2);
+    }
+
+    @Test
+    void chatRawStream_syncException_invokesHandlerOnError_forBlockingFallback() {
+        CapturingExecutor exec = new CapturingExecutor();
+        // 无模型快照 → resolvePrimary 抛 ModelSelectionException（同步，非流式中途）
+        ChatLlmService svc = service(exec, new ModelConfigSnapshot(List.of(), List.of(),
+                noLimit(), new FailoverPolicy.Builder("fo").build()));
+        Throwable[] caught = new Throwable[1];
+        StreamingReplyHandler handler = new StreamingReplyHandler() {
+            @Override public void onPartialResponse(String token) { }
+            @Override public void onCompleteResponse(String fullReply, int tokens) { }
+            @Override public void onError(Throwable error) { caught[0] = error; }
+        };
+
+        svc.chatRawStream("hi", Intent.OTHER, handler);
+
+        // 同步抛→统一走 onError（OutputStep 据此回退阻塞 chatRaw，保完整主备容灾）
+        assertThat(caught[0]).isInstanceOf(ModelSelectionException.class);
+    }
+
     // ---- helpers ----
 
     private static ChatLlmService service(CapturingExecutor exec, ModelConfigSnapshot snapshot) {
@@ -211,6 +254,14 @@ class ChatLlmServiceTest {
             LlmResponse r = stubs.get(request.modelId());
             if (r != null) return r;
             throw new RuntimeException("无桩：" + request.modelId());
+        }
+
+        @Override
+        public void stream(LlmRequest request, StreamingReplyHandler handler) {
+            this.lastRequest = request;
+            handler.onPartialResponse("tok-A");
+            handler.onPartialResponse("tok-B");
+            handler.onCompleteResponse("tok-Atok-B", 2);
         }
     }
 }

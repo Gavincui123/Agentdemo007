@@ -10,4 +10,14 @@ package com.agentdemo007.gateway.core;
 public interface ModelExecutor {
 
     LlmResponse execute(LlmRequest request);
+
+    /**
+     * 流式执行（[[q2-token-streaming]]）：逐 token 经 {@link StreamingReplyHandler} 回调，非阻塞返回整段。
+     * 默认不支持（抛 {@link UnsupportedOperationException}）；流式 capable 执行器（如 LC4j leaf）覆写。
+     * 流式不做中途故障转移（主模型 only）；调用方（OutputStep）{@code onError}→回退阻塞 {@code execute}
+     * （有完整主备容灾），韧性不丢。
+     */
+    default void stream(LlmRequest request, StreamingReplyHandler handler) {
+        throw new UnsupportedOperationException("此 ModelExecutor 不支持流式（streaming）");
+    }
 }

@@ -46,24 +46,31 @@ public class ToolCallExecutor {
     private final int maxTokens;
     private final List<ToolSpecification> specs;
     private final Map<String, ToolExecutor> executors;
+    private final Map<String, ToolCategory> categoryMap;
 
     public ToolCallExecutor(UnifiedModelGateway gateway, ModelConfigCenter center, int maxTokens,
-                            List<ToolSpecification> specs, Map<String, ToolExecutor> executors) {
+                            List<ToolSpecification> specs, Map<String, ToolExecutor> executors,
+                            Map<String, ToolCategory> categoryMap) {
         this.gateway = gateway;
         this.center = center;
         this.maxTokens = maxTokens;
         this.specs = specs;
         this.executors = executors;
+        this.categoryMap = (categoryMap != null) ? categoryMap : Map.of();
     }
 
     /**
-     * 执行工具调用（若模型判定需要）：单次前向 doChat → dispatch tool_calls。
+     * 执行工具调用（若模型判定需要）：单次前向 doChat → dispatch tool_calls → 结构化结果（带通道 category）。
+     *
+     * <p>[[business-tools-workflow-dag]] §2.2：返回 {@link ToolCallResult}（name + content + category），
+     * category 取自 {@link ToolSchemaProvider#categoryMap()}（@ToolChannel 标注，缺省 COMPUTE），
+     * 供 {@link ToolExecutionStep} 按 category 路由 3 通道（RUNTIME/RAG/COMPUTE）。
      *
      * @param query 用户输入/标准化 Query
-     * @return 工具结果列表；模型未出 tool_calls 返回空
+     * @return 结构化工具结果列表（带 category）；模型未出 tool_calls 返回空
      * @throws com.agentdemo007.resilience.ToolCircuitOpenException breaker OPEN（交上层收口 TOOL_FAILURE）
      */
-    public List<String> execute(String query) {
+    public List<ToolCallResult> execute(String query) {
         GatewayChatModel chatModel = buildChatModel();
         if (chatModel == null) {
             // 无 CHIT_CHAT 路由（dev/未装配/llm.enabled=false）→ 不发起工具探测，交下游正常对话
@@ -79,13 +86,15 @@ public class ToolCallExecutor {
         if (calls == null || calls.isEmpty()) {
             return List.of();
         }
-        List<String> results = new ArrayList<>();
+        List<ToolCallResult> results = new ArrayList<>();
         for (ToolExecutionRequest call : calls) {
             ToolExecutor exec = executors.get(call.name());
             if (exec == null) {
                 continue; // 模型幻觉工具名：跳过（降级—无结果，下游正常对话）
             }
-            results.add(exec.execute(call, null)); // ResilientToolExecutor → DefaultToolExecutor 算真 @Tool
+            String content = exec.execute(call, null); // ResilientToolExecutor → DefaultToolExecutor 算真 @Tool
+            ToolCategory category = categoryMap.getOrDefault(call.name(), ToolCategory.COMPUTE);
+            results.add(new ToolCallResult(call.name(), content, category));
         }
         return results;
     }

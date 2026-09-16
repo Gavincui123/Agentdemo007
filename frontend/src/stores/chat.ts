@@ -18,6 +18,9 @@ export interface ChatMessage {
   scenario?: string | null
   traceId?: string | null
   citations?: string[]
+  /** 后端计时（毫秒）：本轮总耗时 / 首个流式 token 耗时（同步接口为 null）。 */
+  totalMs?: number | null
+  firstTokenMs?: number | null
 }
 
 const FALLBACK = '服务暂时不可用，请稍后重试'
@@ -50,6 +53,8 @@ export const useChatStore = defineStore('chat', {
           scenario: res.scenario,
           traceId: lastTraceId,
           citations: res.citations,
+          totalMs: res.totalMs ?? null,
+          firstTokenMs: res.firstTokenMs ?? null,
         })
       } catch (e) {
         const msg = (e as { message?: string })?.message ?? FALLBACK
@@ -84,6 +89,8 @@ export const useChatStore = defineStore('chat', {
               m.scenario = res.scenario
               m.traceId = pendingTraceId
               m.citations = res.citations
+              m.totalMs = res.totalMs ?? null
+              m.firstTokenMs = res.firstTokenMs ?? null
             }
           },
           onError: () => {
