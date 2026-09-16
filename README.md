@@ -1,4 +1,4 @@
-# Agentdemo007 — 小哲电商智能客服 Agent
+# Agentdemo007 — 电商智能客服 Agent
 
 基于 **Spring Boot 4.1 + LangChain4j 1.19 + LangGraph4j 1.5** 构建的电商客服 Agent 单体应用：一条多阶段流水线完成「分诊 → 意图识别 → 路由 → 工具/RAG → 流式回答」，配合超时预算治理、主备模型容灾、断路器与 SSE 生命周期兜底，实现**外部依赖缺失时能力降级而非崩溃**（dev 默认零外部依赖可启动）。
 
