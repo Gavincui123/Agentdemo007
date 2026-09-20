@@ -14,6 +14,9 @@ import com.agentdemo007.gateway.exception.RateLimitExceededException;
  *   <li>{@link FatalException} → FATAL（审计失败，不提交 LLM）。</li>
  *   <li>{@link ToolRecoverableException} → TOOL_RECOVERABLE（反馈 LLM 自纠正）。</li>
  *   <li>{@link NonRetryableException} → NON_RETRYABLE_CLIENT（立即失败）。</li>
+ *   <li>{@link ToolHttpException} → 5xx/408/429 → RETRYABLE_TRANSIENT（退避重试）；
+ *       其余 4xx → NON_RETRYABLE_CLIENT（外部系统明确拒绝，重试同参数无意义，反馈 LLM）。</li>
+ *   <li>{@link ToolTimeoutException} → RETRYABLE_TRANSIENT（工具执行超时，退避重试）。</li>
  *   <li>{@link TransientException} → RETRYABLE_TRANSIENT（退避重试，遵循其 Retry-After 提示）。</li>
  *   <li>{@link RateLimitExceededException} → NON_RETRYABLE_CLIENT（我方预算超限，重试同模型无意义）。</li>
  *   <li>{@link ModelSelectionException}/{@link LlmUnavailableException} → NON_RETRYABLE_CLIENT。</li>
@@ -37,6 +40,17 @@ public class ExceptionTriage {
         }
         if (t instanceof NonRetryableException) {
             return TriageResult.of(ExceptionCategory.NON_RETRYABLE_CLIENT, -1L, "不可重试客户端错误");
+        }
+        if (t instanceof ToolHttpException h) {
+            if (h.status() >= 500 || h.status() == 408 || h.status() == 429) {
+                return TriageResult.of(ExceptionCategory.RETRYABLE_TRANSIENT, -1L,
+                        "服务端瞬态错误（HTTP " + h.status() + "）：退避重试");
+            }
+            return TriageResult.of(ExceptionCategory.NON_RETRYABLE_CLIENT, -1L,
+                    "客户端错误（HTTP " + h.status() + "）：重试同参数无意义，反馈 LLM");
+        }
+        if (t instanceof ToolTimeoutException) {
+            return TriageResult.of(ExceptionCategory.RETRYABLE_TRANSIENT, -1L, "工具执行超时：退避重试");
         }
         if (t instanceof TransientException te) {
             return TriageResult.of(ExceptionCategory.RETRYABLE_TRANSIENT, te.retryAfterMs(), "瞬态可重试");

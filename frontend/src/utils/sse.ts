@@ -39,14 +39,51 @@ export function extractSseData(event: string): string | null {
   return parts.length ? parts.join('\n') : null
 }
 
+/**
+ * 从单个事件块抽取 event 字段（SSE 事件名；无 event 行返回 null，调用方按缺省 'message' 处理）。
+ * P0 可观测：后端 /chat/stream 用命名事件（step_started/step_finished/reply_chunk/reply_ready），
+ * 前端此前只抽 data 丢弃事件名——逐步进度与流式 token 因此全被 parse 层扔掉。
+ */
+export function extractSseEventName(event: string): string | null {
+  const lines = event.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  for (const line of lines) {
+    if (!line || line.startsWith(':')) continue // 空行 / 注释
+    const colon = line.indexOf(':')
+    if (colon === -1) continue
+    if (line.slice(0, colon) !== 'event') continue
+    let value = line.slice(colon + 1)
+    if (value.startsWith(' ')) value = value.slice(1) // SSE 规范：剥一个前导空格
+    return value
+  }
+  return null
+}
+
 /** 指数退避（确定性，无抖动）：min(cap, base * 2^attempt)。 */
 export function nextBackoff(attempt: number, base = 500, cap = 8000): number {
   return Math.min(base * Math.pow(2, attempt), cap)
 }
 
+/**
+ * SSE 流被前置拒绝（闸口/鉴权）：HTTP 200 + UnifiedResponse JSON（非 event-stream）。
+ * 不可重试（重试也不会变），message 为后端面向用户的话术（闸口口令/限额提示），由调用方透传气泡。
+ */
+export class SseRejectionError extends Error {
+  code: number
+  constructor(message: string, code: number) {
+    super(message)
+    this.name = 'SseRejectionError'
+    this.code = code
+  }
+}
+
 export interface SseHandlers {
-  /** 每个完整 SSE 事件的 data 载荷。 */
-  onMessage: (data: string) => void
+  /**
+   * 每个完整 SSE 事件的 data 载荷（兼容通道：不携带事件名）。
+   * 未提供 {@link onEvent} 时启用；两者都提供时 onEvent 优先、onMessage 不投递。
+   */
+  onMessage?: (data: string) => void
+  /** 命名事件通道：name=SSE event 字段（缺省 'message'），data=载荷。P0 可观测主通道。 */
+  onEvent?: (name: string, data: string) => void
   /** 流成功打开（HTTP 200 + body 就绪）；携带响应头 traceId 供前端对齐日志/链路。 */
   onOpen?: (traceId: string | null) => void
   /** 错误；willRetry=true 表示将退避重试，false 表示耗尽即将关闭。 */
@@ -57,6 +94,8 @@ export interface SseHandlers {
   signal?: AbortSignal
   /** 最大重试次数（默认 3）。 */
   maxRetries?: number
+  /** 附加请求头（如访问闸口 X-Access-Code），与默认头合并、同名覆盖。 */
+  headers?: Record<string, string>
 }
 
 /**
@@ -71,13 +110,13 @@ export async function streamChat(
   body: unknown,
   handlers: SseHandlers,
 ): Promise<void> {
-  const { onMessage, onOpen, onError, onClose, signal, maxRetries = 3 } = handlers
+  const { onMessage, onEvent, onOpen, onError, onClose, signal, maxRetries = 3, headers } = handlers
   let attempt = 0
   for (;;) {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...headers },
         body: JSON.stringify(body),
         signal,
       })
@@ -88,12 +127,23 @@ export async function streamChat(
       if (!res.ok || !res.body) {
         throw new Error(`SSE HTTP ${res.status}`)
       }
+      // 前置拒绝（闸口/鉴权）：Content-Type 是 JSON 而非 event-stream——不可重试，话术透传
+      const contentType = res.headers.get('content-type') ?? ''
+      if (contentType.includes('application/json')) {
+        const rejectBody = (await res.json()) as { code?: number; message?: string }
+        throw new SseRejectionError(rejectBody?.message ?? '请求被拒绝', rejectBody?.code ?? 0)
+      }
       onOpen?.(res.headers.get('x-trace-id'))
-      await readSseStream(res.body, onMessage, signal)
+      await readSseStream(res.body, onMessage, onEvent, signal)
       onClose?.()
       return // 正常关闭
     } catch (err) {
       if (signal?.aborted) {
+        onClose?.()
+        return
+      }
+      if (err instanceof SseRejectionError) {
+        onError?.(err, false)
         onClose?.()
         return
       }
@@ -115,9 +165,15 @@ export async function streamChat(
 
 async function readSseStream(
   body: ReadableStream<Uint8Array>,
-  onMessage: (data: string) => void,
+  onMessage: ((data: string) => void) | undefined,
+  onEvent: ((name: string, data: string) => void) | undefined,
   signal?: AbortSignal,
 ): Promise<void> {
+  // onEvent 优先（携带事件名）；仅提供 onMessage 时走兼容通道（data-only）
+  const deliver = (name: string, data: string) => {
+    if (onEvent) onEvent(name, data)
+    else onMessage?.(data)
+  }
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -134,11 +190,11 @@ async function readSseStream(
       buffer = remainder
       for (const ev of events) {
         const data = extractSseData(ev)
-        if (data !== null) onMessage(data)
+        if (data !== null) deliver(extractSseEventName(ev) ?? 'message', data)
       }
     }
     const tail = extractSseData(buffer)
-    if (tail !== null) onMessage(tail)
+    if (tail !== null) deliver(extractSseEventName(buffer) ?? 'message', tail)
   } finally {
     reader.releaseLock()
   }

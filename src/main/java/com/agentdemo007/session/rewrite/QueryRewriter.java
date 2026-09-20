@@ -62,9 +62,19 @@ public class QueryRewriter implements PipelineStep {
             context.setQueryEnrichment(enricher.enrich(rawInput));
             return new StepOutcome.Proceed();
         }
+        // 空历史（首句/新会话）无指代可消解 → 直用原问题，不调改写小模型（零 LLM）。
+        // 实测改写小模型 0.8~2.6s 且首句改写产物=原话（无上下文可补）——这是"发起会话到
+        // 首条日志/首字"延迟的主要构成，跳过后时间线前移一整轮 LLM。
+        List<ChatMessage> history = context.history();
+        if (history == null || history.isEmpty()) {
+            log.debug("空历史跳过改写（省一轮小模型，直用原问题）：sessionId={}", context.sessionId());
+            context.setStandardQuery(StandardQuery.of(rawInput));
+            context.setQueryEnrichment(enricher.enrich(rawInput));
+            return new StepOutcome.Proceed();
+        }
         try {
             String prompt = buildPrompt(context.history(), rawInput);
-            String rewrite = llm.decide(prompt);
+            String rewrite = llm.decide(prompt, "查询改写");
             if (rewrite == null || rewrite.isBlank()) {
                 log.debug("改写输出为空，回退原问题：sessionId={}", context.sessionId());
                 context.setStandardQuery(StandardQuery.of(rawInput));
@@ -74,6 +84,10 @@ public class QueryRewriter implements PipelineStep {
             String trimmed = rewrite.trim();
             context.setStandardQuery(StandardQuery.of(trimmed));
             context.setQueryEnrichment(enricher.enrich(trimmed));
+            // 改写产物可见性（dev 检查）：产物只供理解层（意图分类/route_model）消费，
+            // 严禁喂关键词词表——内联的历史语境词会误命中（2026-09-17「我要退货」事故）。
+            log.debug("查询改写完成：sessionId={} raw='{}' → standard='{}'",
+                    context.sessionId(), rawInput, trimmed);
             return new StepOutcome.Proceed();
         } catch (Exception e) {
             log.debug("改写 LLM 调用失败，回退原问题（不阻塞）：sessionId={} reason={}",
@@ -85,11 +99,9 @@ public class QueryRewriter implements PipelineStep {
     }
 
     private String buildPrompt(List<ChatMessage> history, String rawInput) {
-        String transcript = history.isEmpty()
-                ? "（无历史，本轮为首句）"
-                : history.stream()
-                        .map(m -> "[" + label(m) + "] " + m.content())
-                        .collect(Collectors.joining("\n"));
+        String transcript = history.stream()
+                .map(m -> "[" + label(m) + "] " + m.content())
+                .collect(Collectors.joining("\n"));
         return "你是小哲电商客服系统的问题改写器。根据以下对话历史，把用户本轮的口语化/指代/省略问题"
                 + "改写为一个自足、可独立理解的标准查询。约束：必须保留用户原问题原意"
                 + "（不可丢弃/篡改用户原话），只补充必要的上下文（关键词/商品/活动名/时间线）使指代可消解；"

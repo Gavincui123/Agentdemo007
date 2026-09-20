@@ -12,6 +12,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -204,12 +205,117 @@ class HitlStepTest {
         assertThat(ticketService.all()).hasSize(1);
     }
 
+    // ---- 2026-09-18 L2：业务幂等键（跨会话）+ 挂起即 checkpoint ----
+
+    private final HitlCheckpointService checkpoints =
+            new HitlCheckpointService(null, new com.fasterxml.jackson.databind.ObjectMapper(), Runnable::run);
+    private final HitlIdempotencyKeyResolver keyResolver = new HitlIdempotencyKeyResolver();
+
+    /** 退款场景上下文：routePlan 候选 intent=refund + 订单号入话 → 键恒为 hitl:REFUND:ORD-001。 */
+    private PipelineContext refundCtx(String sessionId, String query) {
+        PipelineContext c = new PipelineContext(sessionId, query);
+        c.setIntent(Intent.TRANSFER_TO_HUMAN);
+        c.setRoutePlan(routePlan("refund", FallbackPolicy.TRANSFER_TO_HUMAN,
+                RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS));
+        return c;
+    }
+
+    private HitlStep fullStep(HitlDecision decision) {
+        return new HitlStep(handler, decision, ticketService, AgentMetrics.NO_OP, keyResolver, checkpoints);
+    }
+
+    @Test
+    void duplicateRequest_newSession_reusesPendingTicket_noDuplicate() {
+        // 跨会话幂等（用户裁决核心场景）：不同 sessionId、同订单同动作 → 复用同一张 PENDING 单
+        HitlStep step = fullStep(decision(Duration.ofMinutes(5),
+                DecisionResolver.none(), PermissionChecker.alwaysPermitted()));
+        PipelineContext first = refundCtx("sess-A", "我要退款 ORD-001");
+        PipelineContext second = refundCtx("sess-B", "我要退款 ORD-001"); // 用户重开会话
+
+        StepOutcome out1 = step.process(first);
+        StepOutcome out2 = step.process(second);
+
+        assertThat(out1).isInstanceOf(StepOutcome.ShortCircuit.class);
+        assertThat(out2).isInstanceOf(StepOutcome.ShortCircuit.class);
+        assertThat(ticketService.all()).hasSize(1); // 不重复建单
+        assertThat(second.hitlTicketId()).isEqualTo(first.hitlTicketId()); // 复用同一单
+    }
+
+    @Test
+    void approvedExisting_proceeds_idempotentApproval() {
+        // 已批准工单 + 重发同单申请 → 幂等放行（人工批准即该业务动作的许可，恢复锚定放行语义）
+        HitlStep step = fullStep(decision(Duration.ofMinutes(5),
+                DecisionResolver.none(), PermissionChecker.alwaysPermitted()));
+        PipelineContext first = refundCtx("sess-A", "我要退款 ORD-001");
+        step.process(first);
+        ticketService.resolve(first.hitlTicketId(), HumanTicket.Status.APPROVED, Instant.now());
+
+        StepOutcome out = step.process(refundCtx("sess-B", "我要退款 ORD-001"));
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(ticketService.all()).hasSize(1); // 仍只有一张单
+    }
+
+    @Test
+    void rejectedExisting_shortCircuits_noReReview() {
+        // 已驳回工单 + 换会话重提 → 拒绝重审（防"驳回后换会话绕过审批"）
+        HitlStep step = fullStep(decision(Duration.ofMinutes(5),
+                DecisionResolver.none(), PermissionChecker.alwaysPermitted()));
+        PipelineContext first = refundCtx("sess-A", "我要退款 ORD-001");
+        step.process(first);
+        ticketService.resolve(first.hitlTicketId(), HumanTicket.Status.REJECTED, Instant.now());
+
+        StepOutcome out = step.process(refundCtx("sess-B", "我要退款 ORD-001"));
+
+        assertThat(out).isInstanceOf(StepOutcome.ShortCircuit.class);
+        assertThat(ticketService.all()).hasSize(1);
+    }
+
+    @Test
+    void timeoutExisting_recreatesTicket_keyRemapped() {
+        // 超时单（人工未决议）→ 允许重建，键索引指向新单
+        HitlStep step = fullStep(decision(Duration.ofMinutes(5),
+                DecisionResolver.none(), PermissionChecker.alwaysPermitted()));
+        PipelineContext first = refundCtx("sess-A", "我要退款 ORD-001");
+        step.process(first);
+        ticketService.markTimeout(first.hitlTicketId(), Instant.now());
+
+        PipelineContext second = refundCtx("sess-B", "我要退款 ORD-001");
+        StepOutcome out = step.process(second);
+
+        assertThat(out).isInstanceOf(StepOutcome.ShortCircuit.class);
+        assertThat(ticketService.all()).hasSize(2); // 新建一单
+        assertThat(ticketService.findByIdempotencyKey("hitl:REFUND:ORD-001").orElseThrow().id())
+                .isEqualTo(second.hitlTicketId()); // 键 → 最新单（超时重建重映射）
+    }
+
+    @Test
+    void pendingShortCircuit_savesCheckpoint_withBusinessKey() {
+        // 挂起即 checkpoint（StateGraph 断点语义）：ACTIVE 快照 + 业务幂等键入快照
+        HitlStep step = fullStep(decision(Duration.ofMinutes(5),
+                DecisionResolver.none(), PermissionChecker.alwaysPermitted()));
+        PipelineContext c = refundCtx("sess-A", "我要退款 ORD-001");
+
+        step.process(c);
+
+        var snapshot = checkpoints.findActive(c.hitlTicketId());
+        assertThat(snapshot).isPresent();
+        assertThat(snapshot.orElseThrow().idempotencyKey()).isEqualTo("hitl:REFUND:ORD-001");
+        assertThat(snapshot.orElseThrow().rawInput()).isEqualTo("我要退款 ORD-001");
+        assertThat(snapshot.orElseThrow().sessionId()).isEqualTo("sess-A");
+    }
+
     // ---- helper（#135 routePlan source 门控测试）----
 
     private static RoutePlan routePlan(FallbackPolicy fallback, RoutePlan.Source source) {
+        return routePlan(fallback == FallbackPolicy.TRANSFER_TO_HUMAN ? "security_request" : "general_chat",
+                fallback, source);
+    }
+
+    private static RoutePlan routePlan(String intent, FallbackPolicy fallback, RoutePlan.Source source) {
         boolean transfer = fallback == FallbackPolicy.TRANSFER_TO_HUMAN;
         RoutePlanCandidate c = new RoutePlanCandidate(
-                transfer ? "security_request" : "general_chat",
+                intent,
                 false, false, List.of(), List.of(),
                 transfer ? RiskLevel.HIGH : RiskLevel.LOW,
                 false, fallback);

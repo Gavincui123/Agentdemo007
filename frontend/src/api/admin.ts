@@ -54,7 +54,7 @@ export async function getModels(): Promise<ModelSummary[]> {
   return http.get('/admin/models') as unknown as Promise<ModelSummary[]>
 }
 
-/** 待审批工单（PENDING）：GET /admin/hitl/tickets。 */
+/** 工单列表（全量：PENDING 优先，已决议单留痕带状态徽章·2026-09-20）：GET /admin/hitl/tickets。 */
 export async function getHitlTickets(): Promise<HitlTicketSummary[]> {
   return http.get('/admin/hitl/tickets') as unknown as Promise<HitlTicketSummary[]>
 }

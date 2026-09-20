@@ -21,8 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>{@link SessionLoadStep} 经 {@link PipelineContext} 读写、返回 {@link StepOutcome}（落地收口契约）：
  * 正常 → 拉取 Redis 历史回填 {@code context.history} + {@code Proceed}；
- * Redis 故障（{@code SessionCacheException}）→ {@code ShortCircuit(SESSION_DOWN)} 话术短路（§5.12 + eval deg-003），
- * 由 {@code PipelineOrchestrator} 收口为话术 HTTP 200，不抛 5xx。
+ * Redis 故障（{@code SessionCacheException}）→ <b>{@code Degrade(SESSION_DOWN)} 降级单轮模式继续</b>
+ * （2026-09-17 定案：缓存不杀轮，history 置空、标记 degraded；eval deg-003 已同步）。
  */
 class SessionLoadStepTest {
 
@@ -50,16 +50,17 @@ class SessionLoadStepTest {
     }
 
     @Test
-    void process_redisDown_shortCircuitsSessionDown() {
+    void process_redisDown_degradesSingleTurnMode_doesNotKillTurn() {
+        // 2026-09-17 定案回归钉：缓存挂 → Degrade 继续（历史置空），整轮不被杀
         SessionCacheService svc = new SessionCacheService(new ThrowingStore(), Duration.ofSeconds(60));
         SessionLoadStep step = new SessionLoadStep(svc);
         PipelineContext ctx = new PipelineContext("s1", "x");
 
         StepOutcome outcome = step.process(ctx);
 
-        assertThat(outcome).isInstanceOf(StepOutcome.ShortCircuit.class);
-        assertThat(((StepOutcome.ShortCircuit) outcome).scenario()).isEqualTo(DegradationScenario.SESSION_DOWN);
-        assertThat(ctx.history()).isEmpty(); // 故障时未回填历史
+        assertThat(outcome).isInstanceOf(StepOutcome.Degrade.class);
+        assertThat(((StepOutcome.Degrade) outcome).scenario()).isEqualTo(DegradationScenario.SESSION_DOWN);
+        assertThat(ctx.history()).isEmpty(); // 故障时历史置空（单轮模式）
     }
 
     @Test

@@ -8,8 +8,11 @@ package com.agentdemo007.resilience;
  */
 public record TriageResult(ExceptionCategory category, Decision decision, long retryAfterMs, String note) {
 
-    /** 便捷工厂：决策取类别默认，备注 + Retry-After 由调用方提供。 */
-    static TriageResult of(ExceptionCategory category, long retryAfterMs, String note) {
+    /**
+     * 便捷工厂：决策取类别默认，备注 + Retry-After 由调用方提供。
+     * public：工具扩展分诊器（{@code capability.tool} 包的 {@code ToolExceptionTriage}）复用同一产出契约。
+     */
+    public static TriageResult of(ExceptionCategory category, long retryAfterMs, String note) {
         return new TriageResult(category, category.decision(), retryAfterMs, note);
     }
 

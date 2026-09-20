@@ -29,7 +29,7 @@ public class LlmRouteCandidateSource implements RouteCandidateSource {
     @Override
     public Optional<RoutePlanCandidate> decide(String prompt) {
         try {
-            String raw = llm.decide(prompt);
+            String raw = llm.decide(prompt, "路由计划");
             return parser.parse(raw); // parse 内含 null/blank/garbage/缺枚举守卫 → empty
         } catch (Exception e) {
             // route_model 不可用（主备耗尽/熔断）→ rule 兜底（路由永不崩）

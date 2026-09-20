@@ -31,9 +31,14 @@ public class LlmSummaryHook implements SummaryHook {
 
     @Override
     public Optional<String> summarize(List<ChatMessage> priorHistory, String currentInput) {
+        // 新会话首轮（历史为空）：锚点=用户原话，零 LLM——对单条消息做 LLM 转述零增益，
+        // 且限流期实测该调用阻塞新会话首字 16.6s（2026-09-17：20.6s 轮中 16.6s 在摘要）。
+        if (priorHistory == null || priorHistory.isEmpty()) {
+            return Optional.ofNullable(currentInput).filter(s -> !s.isBlank());
+        }
         try {
             String prompt = buildPrompt(priorHistory, currentInput);
-            String summary = llm.chat(prompt, Intent.CHIT_CHAT);
+            String summary = llm.chat(prompt, Intent.CHIT_CHAT, "会话摘要");
             if (summary == null || summary.isBlank()) {
                 return Optional.empty();
             }

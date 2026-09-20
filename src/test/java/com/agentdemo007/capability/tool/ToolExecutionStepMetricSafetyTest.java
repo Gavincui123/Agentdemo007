@@ -39,7 +39,7 @@ class ToolExecutionStepMetricSafetyTest {
     private ToolCallExecutor throwingExecutor() {
         return new ToolCallExecutor(null, null, 0, List.of(), Map.of(), Map.of()) {
             @Override
-            public List<ToolCallResult> execute(String query) {
+            public ToolTurn execute(String query) {
                 throw new ToolCircuitOpenException("flaky");
             }
         };

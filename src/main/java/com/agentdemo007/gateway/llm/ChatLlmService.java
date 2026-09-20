@@ -70,7 +70,12 @@ public class ChatLlmService {
 
     /** 同步对话：返回模型回复文本。强制 {@link PromptSanitizer} 包裹（注入隔离）。 */
     public String chat(String prompt, Intent intent) {
-        return invoke(sanitizer.sanitize(prompt), intent, disableThinkingFor(intent));
+        return chat(prompt, intent, "回答生成");
+    }
+
+    /** 同步对话（带场景标签，随 {@code GatewayRequest} 进「LLM出站」日志）：非回答类用途（如会话摘要）显式标注。 */
+    public String chat(String prompt, Intent intent, String scene) {
+        return invoke(sanitizer.sanitize(prompt), intent, disableThinkingFor(intent), scene);
     }
 
     /**
@@ -82,7 +87,15 @@ public class ChatLlmService {
      * prod LangChain4j 桥接应改为接收 {@code List<ChatMessage>} 结构化消息（延后薄层）。
      */
     public String chatRaw(String prompt, Intent intent) {
-        return invoke(prompt, intent, disableThinkingFor(intent));
+        return chatRaw(prompt, intent, "回答生成");
+    }
+
+    /**
+     * 同步对话（不二次包裹 + 场景标签）：组装 prompt 的非「回答生成」用途（如澄清话术生成）显式标注，
+     * 随 {@code GatewayRequest} 进「LLM出站」日志——同轮多次出站按用途可辨。包裹语义同 {@link #chatRaw(String, Intent)}。
+     */
+    public String chatRaw(String prompt, Intent intent, String scene) {
+        return invoke(prompt, intent, disableThinkingFor(intent), scene);
     }
 
     /**
@@ -105,7 +118,7 @@ public class ChatLlmService {
         // 流式主模型 only，failover 不用于流式（无中途切备），传单主策略占位
         FailoverPolicy failover = new FailoverPolicy.Builder(primary).build();
         GatewayRequest request = new GatewayRequest(primary, prompt, maxTokens,
-                failover, center.flowControl(), disableThinkingFor(intent));
+                failover, center.flowControl(), disableThinkingFor(intent), "回答生成");
         try {
             gateway.stream(request, handler);
         } catch (Throwable e) {
@@ -123,7 +136,15 @@ public class ChatLlmService {
      * grep {@code decide(} 可审计全部决策调用均关思考（用户铁律：意图识别/决策路由用模型一律关思考）。
      */
     public String decide(String prompt) {
-        return invoke(sanitizer.sanitize(prompt), Intent.CHIT_CHAT, true);
+        return decide(prompt, "决策");
+    }
+
+    /**
+     * 决策/控制调用（带场景标签）：{@code scene}（如 查询改写/意图识别/路由计划）随
+     * {@code GatewayRequest} 进「LLM出站」日志——同轮多次小模型出站按用途可辨。
+     */
+    public String decide(String prompt, String scene) {
+        return invoke(sanitizer.sanitize(prompt), Intent.CHIT_CHAT, true, scene);
     }
 
     /** 意图驱动思考开关算定：闲聊恒关；非闲聊由 {@code thinkingEnabled} 定（true=开，false=关）。 */
@@ -131,7 +152,7 @@ public class ChatLlmService {
         return (intent == Intent.CHIT_CHAT) || !thinkingEnabled;
     }
 
-    private String invoke(String prompt, Intent intent, boolean disableThinking) {
+    private String invoke(String prompt, Intent intent, boolean disableThinking, String scene) {
         Optional<RouteRule> rule = center.routeFor(intent);
         String primary = resolvePrimary(intent, rule);
         // 主备容灾：有路由规则则按其备链建 FailoverPolicy（maxRetries=备链长度，
@@ -152,7 +173,7 @@ public class ChatLlmService {
         // FailoverExecutor→RoutingModelExecutor 透传到执行器，执行器据此合并 provider 各自关思考参数
         // （SF enable_thinking / SenseNova reasoning_effort）。
         GatewayRequest request = new GatewayRequest(primary, prompt, maxTokens,
-                failover, center.flowControl(), disableThinking);
+                failover, center.flowControl(), disableThinking, scene);
         LlmResponse response = gateway.invoke(request);
         return response.content();
     }

@@ -26,7 +26,7 @@ class RagStepTemporalFramingTest {
     private RagStep newStep(InMemoryVectorStore store, double minScore, int minCount, int topK) {
         return new RagStep(new VectorRetriever(embedding, store),
                 new RetrievalValidator(minScore, minCount),
-                new Bm25Reranker(), new RagInjectionScanner(), topK);
+                new Bm25Reranker(), new RagInjectionScanner(), topK, 10, 0.2);
     }
 
     @Test

@@ -1,6 +1,8 @@
 package com.agentdemo007.gateway.core;
 
 import com.agentdemo007.gateway.config.FlowControlPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 统一模型网关（第六层·所有出站 LLM 调用的唯一入口）。
@@ -11,6 +13,8 @@ import com.agentdemo007.gateway.config.FlowControlPolicy;
  * 收口：任何 LLM 调用只经此网关，不在各业务层散落直连引擎。
  */
 public class UnifiedModelGateway {
+
+    private static final Logger log = LoggerFactory.getLogger(UnifiedModelGateway.class);
 
     private final ModelExecutor executor;
     private final TokenBudgetChecker budgetChecker;
@@ -40,6 +44,9 @@ public class UnifiedModelGateway {
     public void stream(GatewayRequest request, StreamingReplyHandler handler) {
         FlowControlPolicy policy = request.flowControlPolicy();
         budgetChecker.check(request, policy); // 超限 → RateLimitExceededException（向上传→onError）
+        // 流式出站此前零日志（同步路径有 FailoverExecutor 的「LLM出站」行，流式不经它）——补一行出站登记，
+        // scene+model 与同步口径对齐（durMs 归执行器回调口径，入口行不打）；回答生成走流式的可见性由此保证
+        log.info("LLM出站(流式) scene={} model={}", request.sceneOrDefault(), request.primaryModelId());
         executor.stream(new LlmRequest(request.primaryModelId(), request.prompt(), request.maxTokens(),
                 request.disableThinking(), request.messages(), request.tools()), handler);
     }

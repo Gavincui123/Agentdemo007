@@ -10,6 +10,8 @@ import java.util.List;
  * @param total    总用例数
  * @param passRate 通过率（0.0–1.0）
  * @param cases    每例结果
+ * @param source   黄金数据来源（nacos=本次实时拉取的 Nacos 数据 / local=本地 classpath 兜底）
  */
-public record StageReport(String stage, int passed, int total, double passRate, List<CaseResult> cases) {
+public record StageReport(String stage, int passed, int total, double passRate,
+                          List<CaseResult> cases, String source) {
 }

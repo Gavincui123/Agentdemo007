@@ -60,7 +60,7 @@ public class EvalExecutor {
     }
 
     /**
-     * 从 classpath 加载单个 eval 文件并解析为 {@link EvalFile}。
+     * 从 classpath 加载单个 eval 文件并解析为 {@link EvalFile}（本地兜底路径，source=local）。
      *
      * @param classpathResource classpath 路径（如 {@code eval/injection.json}）
      * @return 解析后的 eval 文件；资源不存在或解析失败抛 {@link IllegalStateException}
@@ -73,6 +73,21 @@ public class EvalExecutor {
             return objectMapper.readValue(in, EvalFile.class);
         } catch (IOException e) {
             throw new IllegalStateException("评测资源加载失败：" + classpathResource, e);
+        }
+    }
+
+    /**
+     * 从内容字符串解析单个 eval 文件（2026-09-17 Nacos 动态化）：内容来自
+     * {@link EvalContentResolver#resolve}（Nacos 实时拉取或本地 classpath 兜底），
+     * source 随 {@link EvalFile#source()} 透传至报告。解析失败抛 {@link IllegalStateException}，
+     * 由 {@code EvalController} 逐 stage 降级（跳过该 stage，其余照常）。
+     */
+    public EvalFile parseFile(String classpathResource, String content, String source) {
+        try {
+            EvalFile parsed = objectMapper.readValue(content, EvalFile.class);
+            return new EvalFile(parsed.stage(), parsed.description(), parsed.cases(), source);
+        } catch (Exception e) {
+            throw new IllegalStateException("评测数据解析失败：" + classpathResource, e);
         }
     }
 
@@ -92,7 +107,8 @@ public class EvalExecutor {
         return new EvalReport(stages, totalPassed, totalCases);
     }
 
-    private StageReport runStage(EvalFile file) {
+    /** 跑单个 stage（公开：{@code EvalJobManager} 异步逐 stage 驱动，进度快照按 stage 产出）。 */
+    public StageReport runStage(EvalFile file) {
         List<CaseResult> caseResults = new ArrayList<>();
         int passed = 0;
         for (EvalCase evalCase : file.cases()) {
@@ -104,7 +120,7 @@ public class EvalExecutor {
         }
         int total = file.cases().size();
         double passRate = total == 0 ? 0.0 : (double) passed / total;
-        return new StageReport(file.stage(), passed, total, passRate, caseResults);
+        return new StageReport(file.stage(), passed, total, passRate, caseResults, file.source());
     }
 
     private CaseResult runCase(EvalCase evalCase) {

@@ -15,8 +15,8 @@ import java.util.List;
  * 工具层 Spring 装配（Phase 9·② Slice 3 退役手撸路径后）。
  *
  * <p>装配 per-tool 断路器（{@link ToolCircuitBreaker}）、工具 schema + 执行器单源（{@link ToolSchemaProvider}，
- * @Tool beans → ToolSpecifications → schema + DefaultToolExecutor）、LC4j 前向工具调用执行器
- * （{@link ToolCallExecutor}，option A 数据步·替手撸 {@code ToolExecutor} 角色）。
+ * @Tool beans → ToolSpecifications → schema + DefaultToolExecutor（propagate/wrap 双开））、有界 Agent loop
+ * 工具调用执行器（{@link ToolCallExecutor}，2026-09-17 推翻单次前向：失败回喂探测 LLM 自纠正/澄清）。
  *
  * <p>退役：旧手撸 {@code ToolExecutor}（detect→parse→validate→reparse 循环）+ {@code ToolDefinition} beans
  * + Detector/ParamParser/SchemaValidator/Reparser/ToolErrorFeedback bean——模型经 function-calling 直接出
@@ -55,28 +55,42 @@ public class ToolConfig {
             MultiplicationTool multiplicationTool, ArithmeticTool arithmeticTool,
             OrderQueryTool orderTool, UserQueryTool userTool, ProductQueryTool productTool,
             ReturnPolicyTool returnPolicyTool, RefundPolicyTool refundPolicyTool,
-            PromotionPolicyTool promotionPolicyTool) {
-        // [[business-tools-workflow-dag]] §2.2：6 业务 @Tool（3 RUNTIME 外部系统 + 3 RAG 政策）并入单源；
-        // @ToolChannel 反射入 ToolBinding.category，ToolCallExecutor 据此标 ToolCallResult，ToolExecutionStep 路由
+            PromotionPolicyTool promotionPolicyTool, TicketStatusQueryTool ticketStatusQueryTool) {
+        // [[business-tools-workflow-dag]] §2.2：业务 @Tool（3 RUNTIME 外部系统 + 3 RAG 政策 + 工单进度查询）
+        // 并入单源；@ToolChannel 反射入 ToolBinding.category，ToolCallExecutor 据此标 ToolCallResult，
+        // ToolExecutionStep 路由
         return new ToolSchemaProvider(List.of(triangleTool, circleTool, multiplicationTool, arithmeticTool,
-                orderTool, userTool, productTool, returnPolicyTool, refundPolicyTool, promotionPolicyTool));
+                orderTool, userTool, productTool, returnPolicyTool, refundPolicyTool, promotionPolicyTool,
+                ticketStatusQueryTool));
     }
 
     /**
-     * LC4j 前向工具调用执行器（option A 数据步）：单次前向 {@link com.agentdemo007.gateway.llm.GatewayChatModel}
-     * .doChat(带 tools) → 模型出 {@code tool_calls} 则 {@link ResilientToolExecutor} 执行真 {@code @Tool} →
-     * 结果入 {@code context.toolResults}（数据层，下游 ContextBuilder+终答步不动，收口最稳）。
+     * LC4j 工具调用执行器（有界 Agent loop·2026-09-17 推翻单次前向）：至多
+     * {@code app.tool.max-iterations} 轮探测→执行→失败回喂（结构化错误 JSON 交探测模型自纠正/
+     * 澄清）→ 成功即停/轮次耗尽交终答 LLM。工具探测=决策调用 → CHIT_CHAT 小模型 + 关思考
+     * （镜像 {@code ChatLlmService.decide}）。{@code maxTokens} 复用 {@code llm.max-tokens}。
      *
-     * <p>工具探测=决策调用 → CHIT_CHAT 小模型 + 关思考（镜像 {@code ChatLlmService.decide}）。
-     * {@code maxTokens} 复用 {@code llm.max-tokens}。specs + executors 同源（{@link ToolSchemaProvider} 单源），键一致。
+     * <p>韧性参数：per-call 超时 {@code app.tool.timeout-ms}（守护线程硬中断）；分诊重试
+     * {@code app.tool.retry.*}（指数退避+全抖动；参数非法/4xx 不重试）。specs + executors 同源
+     * （{@link ToolSchemaProvider} 单源），键一致。
      */
     @Bean
     ToolCallExecutor toolCallExecutor(UnifiedModelGateway gateway, ModelConfigCenter center,
                                      ToolSchemaProvider schemas, ToolCircuitBreaker breaker,
-                                     @Value("${llm.max-tokens:1024}") int maxTokens) {
-        log.info("工具调用执行器装配（LC4j 前向·option A 数据步）：specs={} maxTokens={}",
-                schemas.allSchemas().size(), maxTokens);
+                                     @Value("${llm.max-tokens:1024}") int maxTokens,
+                                     @Value("${app.tool.max-iterations:2}") int maxRounds,
+                                     @Value("${app.tool.timeout-ms:10000}") long timeoutMs,
+                                     @Value("${app.tool.retry.max-attempts:3}") int maxAttempts,
+                                     @Value("${app.tool.retry.initial-backoff-ms:100}") long initialBackoffMs,
+                                     @Value("${app.tool.retry.multiplier:2.0}") double multiplier,
+                                     @Value("${app.tool.retry.max-backoff-ms:10000}") long maxBackoffMs,
+                                     @Value("${app.tool.retry.jitter:true}") boolean jitter) {
+        com.agentdemo007.resilience.RetryPolicy retryPolicy = new com.agentdemo007.resilience.RetryPolicy(
+                maxAttempts, initialBackoffMs, multiplier, maxBackoffMs, jitter);
+        log.info("工具调用执行器装配（有界 Agent loop）：specs={} maxTokens={} maxRounds={} timeoutMs={} retry={}",
+                schemas.allSchemas().size(), maxTokens, maxRounds, timeoutMs, retryPolicy);
         return new ToolCallExecutor(gateway, center, maxTokens,
-                schemas.allSchemas(), schemas.executors(breaker), schemas.categoryMap());
+                schemas.allSchemas(), schemas.executors(breaker, retryPolicy, timeoutMs),
+                schemas.categoryMap(), maxRounds);
     }
 }

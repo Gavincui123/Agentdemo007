@@ -81,7 +81,7 @@ public class LlmConfig {
         Map<String, RoutingModelExecutor.Route> routes = new LinkedHashMap<>();
         for (LlmProperties.Provider p : props.getProviders()) {
             LangChain4jModelExecutor exec = new LangChain4jModelExecutor(p.getBaseUrl(), p.getApiKey(),
-                    p.getDisableThinkingParams(), props.getTimeout());
+                    p.getDisableThinkingParams(), props.getTimeout(), p.getTemperature());
             routes.put(p.getId() + "-large", new RoutingModelExecutor.Route(exec, p.getLargeModel()));
             routes.put(p.getId() + "-small", new RoutingModelExecutor.Route(exec, p.getSmallModel()));
         }

@@ -57,7 +57,7 @@ public class GatewayChatModel implements ChatModel {
         List<ChatMessage> messages = chatRequest.messages();
         List<ToolSpecification> tools = chatRequest.toolSpecifications();
         GatewayRequest req = new GatewayRequest(modelId, messages, tools,
-                maxTokens, failoverPolicy, flowControlPolicy, disableThinking);
+                maxTokens, failoverPolicy, flowControlPolicy, disableThinking, "工具调用");
         LlmResponse resp = gateway.invoke(req); // 预算关卡 → failover/熔断/关思考 → 执行器 → 记账
 
         // OUT 翻译：LlmResponse → ChatResponse（交回 AiServices 继续循环）

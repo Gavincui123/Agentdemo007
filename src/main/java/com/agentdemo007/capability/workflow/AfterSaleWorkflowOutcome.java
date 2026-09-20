@@ -1,31 +1,21 @@
 package com.agentdemo007.capability.workflow;
 
 /**
- * 售后工作流终态（sealed·[[business-tools-workflow-dag]] §2.3·E1 决策）。
+ * 售后工作流终态（sealed·[[business-tools-workflow-dag]] §2.3·E1 决策·2026-09-20 提交制收缩）。
  *
- * <p>{@link AfterSaleWorkflowGraph#invoke} 返回此类型（从终态读 {@code OUTCOME_KEY}）。四态：
+ * <p>{@link AfterSaleWorkflowGraph#invoke} 返回此类型（从终态读 {@code OUTCOME_KEY}）。
+ * <b>原则（用户裁决）：审批是事件、Agent 最小权限</b>——请求内只有两种可达终态：
  * <ul>
- *   <li>{@link Approved}——validate pass + submit + 审批批准（售后动作完成）；</li>
- *   <li>{@link Rejected}——validate 失败（订单非本人/超窗/不存在），业务规则驳回，携带 {@link Reason} + 客户话术；
- *       <b>≠ {@link com.agentdemo007.common.degradation.DegradationScenario}</b>（业务驳回≠系统失败，E1：
- *       {@code WorkflowExecutionStep} 写 {@code presetReply}+Proceed，{@code OutputStep} 跳 LLM 话术短路）；</li>
- *   <li>{@link Denied}——审批恒驳回至 maxIterations 强制终止（护栏兜底）；</li>
- *   <li>{@link Timeout}——审批超时未决议（submit 已跑、售后已提交但未获批准，不假装成功）。</li>
+ *   <li>{@link Rejected}——validate 失败（订单非本人/不存在/Agent 资格裁决驳回），业务规则驳回，
+ *       携带 {@link Reason} + 客户话术；<b>≠ {@link com.agentdemo007.common.degradation.DegradationScenario}</b>
+ *       （业务驳回≠系统失败，E1：{@code WorkflowExecutionStep} 写 {@code presetReply}+Proceed）；</li>
+ *   <li>{@link Pending}——工单已提交人工审批（建单/复用即返回，无请求内等待）。批准/驳回是管理台的
+ *       工单状态事件；客户对结果的感知走工单状态查询工具，后续轮次获知。</li>
  * </ul>
+ * 旧 Approved/Denied/Timeout 请求内终态随等待链退役（恒批准与超时话术不再存在）。
  */
 public sealed interface AfterSaleWorkflowOutcome
-        permits AfterSaleWorkflowOutcome.Approved, AfterSaleWorkflowOutcome.Rejected,
-        AfterSaleWorkflowOutcome.Denied, AfterSaleWorkflowOutcome.Timeout {
-
-    /**
-     * validate pass + 审批批准：售后动作完成。approver 来自 {@link WorkflowApprovalDecision.Approved}；
-     * orderStatus 来自 {@code query_order} 节点召回的 {@link com.agentdemo007.capability.business.OrderRecord#status()}；
-     * policyConclusion 来自 {@code query_policy} 节点召回的 {@link com.agentdemo007.capability.business.PolicyFragment#text()}。
-     */
-    record Approved(String approver, String orderStatus, String policyConclusion) implements AfterSaleWorkflowOutcome {
-        /** 兼容构造：无订单状态/政策结论（旧调用点/测试零改动）。 */
-        public Approved(String approver) { this(approver, null, null); }
-    }
+        permits AfterSaleWorkflowOutcome.Rejected, AfterSaleWorkflowOutcome.Pending {
 
     /**
      * validate 失败（业务规则驳回）：携带 {@link Reason} + 客户话术。
@@ -34,11 +24,11 @@ public sealed interface AfterSaleWorkflowOutcome
     record Rejected(Reason reason, String customerMessage) implements AfterSaleWorkflowOutcome {
     }
 
-    /** 审批恒驳回至 maxIterations 强制终止（护栏兜底，{@link AfterSaleWorkflowGraph#MAX_ITERATIONS}）。 */
-    record Denied(String reason) implements AfterSaleWorkflowOutcome {
-    }
-
-    /** 审批超时未决议（submit 已跑、售后已提交但未获批准，不假装成功）。 */
-    record Timeout() implements AfterSaleWorkflowOutcome {
+    /**
+     * 工单已提交人工审批（提交制）：建单/复用 PENDING 同单即返回。
+     *
+     * @param alreadyApproved true=同业务键工单此前已批准（未建新单防重复业务动作，客户回"此前已通过"话术）
+     */
+    record Pending(boolean alreadyApproved) implements AfterSaleWorkflowOutcome {
     }
 }

@@ -4,8 +4,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Hybrid 检索器（第四层·Phase 21·稠密+稀疏双 Retriever 通道融合）。
@@ -13,6 +15,9 @@ import java.util.List;
  * <p>融合稠密通道（{@link VectorRetriever}→{@link EmbeddingService}→余弦语义召回）与稀疏通道
  * （{@link Bm25Retriever}→BM25 全语料词面召回）：稀疏(BM25)命中优先置顶（稀有词/精确标识符高 IDF，
  * 与旧"精确词置顶"精神一致）、稠密补齐、按文本去重。两通道互补：稠密捕语义近似、稀疏捕词面精确。
+ *
+ * <p><b>去重取稠密副本</b>：同文本双通道命中时保留<b>稠密</b>副本（余弦口径，可过 cosine 置信度终闸）；
+ * 仅稀疏命中的候选带 BM25 分（非余弦口径），未重排时不得凭它过终闸（真实 RAG：低置信知识绝不进 LLM）。
  *
  * <p><b>降级（混合检索韧性）</b>：稠密通道异常（SiliconFlow embedding 主备全挂）→捕获、降级稀疏-only
  * 继续（不回退 HashEmbedding——索引真向量与查询 hash 向量空间不一致，余弦无意义；稀疏兜底是混合检索
@@ -45,27 +50,35 @@ public class HybridRetriever implements Retriever {
             dense = List.of();
         }
         List<RagFragment> sparse = sparseChannel.retrieve(query, topK);
-        return fuse(dense, sparse, topK);
+        return fuseChannels(dense, sparse, topK);
     }
 
     /**
-     * 双通道融合：稀疏(BM25)命中优先置顶，稠密补齐，按文本去重。
+     * 双通道融合（dev {@link HybridRetriever} 与真库 {@code chroma.ChromaHybridRetriever} 共用）：
+     * 稀疏(BM25)命中优先置顶（精确词/稀有词高 IDF 提权），稠密补齐，按文本去重；
+     * 同文本双命中保留<b>稠密副本</b>（余弦口径可过终闸，见类注释）。{@code cap < 0} 不截断。
      */
-    private List<RagFragment> fuse(List<RagFragment> dense, List<RagFragment> sparse, int topK) {
+    public static List<RagFragment> fuseChannels(List<RagFragment> dense, List<RagFragment> sparse, int cap) {
+        Map<String, RagFragment> denseByText = new HashMap<>();
+        for (RagFragment f : dense) {
+            denseByText.putIfAbsent(textKey(f), f);
+        }
         LinkedHashSet<String> seen = new LinkedHashSet<>();
         List<RagFragment> fused = new ArrayList<>();
-        for (RagFragment f : sparse) {       // 稀疏优先（精确词/稀有词高 IDF）
+        for (RagFragment f : sparse) {       // 稀疏优先置顶（提权）；同文本取稠密副本（余弦口径）
+            String key = textKey(f);
+            RagFragment chosen = denseByText.getOrDefault(key, f);
+            if (seen.add(key)) {
+                fused.add(chosen);
+            }
+        }
+        for (RagFragment f : dense) {        // 稠密补齐（稀疏未覆盖的语义命中）
             if (seen.add(textKey(f))) {
                 fused.add(f);
             }
         }
-        for (RagFragment f : dense) {        // 稠密补齐
-            if (seen.add(textKey(f))) {
-                fused.add(f);
-            }
-        }
-        if (topK >= 0 && fused.size() > topK) {
-            return new ArrayList<>(fused.subList(0, topK));
+        if (cap >= 0 && fused.size() > cap) {
+            return new ArrayList<>(fused.subList(0, cap));
         }
         return fused;
     }

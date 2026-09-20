@@ -14,7 +14,7 @@ import java.util.List;
  * prod 拆为独立 BM25/ES 关键词索引（{@code VectorStore} 不实现 {@code KeywordIndex} 时，
  * 装配 {@link KeywordIndex#NO_OP} 回退纯向量，②降级）。
  */
-public class InMemoryVectorStore implements VectorStore, KeywordIndex, RagCorpus {
+public class InMemoryVectorStore implements VectorStore, KeywordIndex, RagCorpus, SourceDeletableStore {
 
     private final EmbeddingService embedding;
     private final List<Entry> entries = new ArrayList<>();
@@ -45,8 +45,10 @@ public class InMemoryVectorStore implements VectorStore, KeywordIndex, RagCorpus
         List<RagFragment> scored = new ArrayList<>();
         for (Entry e : entries) {
             double sim = cosine(query, e.vector, queryNorm);
+            // 余弦口径（cosineScored=true）：sim 可过 cosine 置信度终闸；保留真库扩展字段
             scored.add(new RagFragment(e.fragment.text(), sim, e.fragment.source(),
-                    e.fragment.timestamp(), e.fragment.validUntil(), e.fragment.temporalTag()));
+                    e.fragment.timestamp(), e.fragment.validUntil(), e.fragment.temporalTag(),
+                    e.fragment.domain(), e.fragment.relevance(), true));
         }
         scored.sort(Comparator.comparingDouble(RagFragment::score).reversed());
         if (topK >= 0 && scored.size() > topK) {
@@ -80,8 +82,10 @@ public class InMemoryVectorStore implements VectorStore, KeywordIndex, RagCorpus
                 }
             }
             if (matches > 0) {
+                // 命中数非余弦口径（cosineScored=false）：未重排时不得凭它过 cosine 终闸
                 scored.add(new RagFragment(text, matches, e.fragment.source(),
-                        e.fragment.timestamp(), e.fragment.validUntil(), e.fragment.temporalTag()));
+                        e.fragment.timestamp(), e.fragment.validUntil(), e.fragment.temporalTag(),
+                        e.fragment.domain(), e.fragment.relevance(), false));
             }
         }
         scored.sort(Comparator.comparingDouble(RagFragment::score).reversed());
@@ -95,6 +99,21 @@ public class InMemoryVectorStore implements VectorStore, KeywordIndex, RagCorpus
     @Override
     public synchronized List<RagFragment> fragments() {
         return entries.stream().map(Entry::fragment).toList();
+    }
+
+    /**
+     * 按精确 source 删除（[[kb-ingest-design]] 知识库换版/下架配套）：匹配片段移出稠密+关键词
+     * 通道（同一份 entries），BM25 全语料经 {@link #fragments()} 同步收敛。
+     */
+    @Override
+    public synchronized int deleteBySources(java.util.Collection<String> sources) {
+        if (sources == null || sources.isEmpty()) {
+            return 0;
+        }
+        java.util.Set<String> set = new java.util.HashSet<>(sources);
+        int before = entries.size();
+        entries.removeIf(e -> set.contains(e.fragment().source()));
+        return before - entries.size();
     }
 
     private static double cosine(float[] query, float[] vec, double queryNorm) {

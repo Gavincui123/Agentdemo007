@@ -43,7 +43,7 @@ public class RouteDispatchStep implements PipelineStep {
         try {
             String modelId = router.route(intent, routeType);
             context.setSelectedModelId(modelId);
-            log.debug("路由分发完成：sessionId={} intent={} route={} model={}",
+            log.debug("路由分发完成（确定性映射·零LLM）：sessionId={} intent={} route={} 回答模型={}",
                     context.sessionId(), intent, routeType, modelId);
             return new StepOutcome.Proceed();
         } catch (ModelSelectionException e) {

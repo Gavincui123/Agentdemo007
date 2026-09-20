@@ -24,8 +24,9 @@ import java.util.regex.Pattern;
  *
  * <p>片段存于 Nacos AiService 提示词模板 key={@link #SEGMENTS_PROMPT_KEY}（内容=bare YAML 数组），
  * 经 {@link PromptRegistry#get} 取模板——热更新走 {@code NacosPromptSource} AiService gRPC push
- * （与 {@code clarify-*} 同已验证通路），本类每请求解析（清单≤22 微秒级，
- * md5 缓存由 SDK 在 registry 层内置）。
+ * （已验证通路），本类每请求解析（清单≤22 微秒级，md5 缓存由 SDK 在 registry 层内置）。
+ * 消费方：{@link SystemAnchorLayer}（回答生成的系统锚点）与 {@code WorkflowExecutionStep}
+ * （澄清话术生成的面向模型的指令，2026-09-17 定案：澄清话术由大模型按片段指令生成）。
  *
  * <p>②每步降级：registry 取模板失败 / YAML 解析失败 / 匹配零片段 → 返回构造注入的 {@code fallback}
  * （= {@link SystemAnchorLayer#DEFAULT_SYSTEM_PROMPT}），不阻塞链路。

@@ -7,10 +7,12 @@ import com.agentdemo007.common.pipeline.PipelineOrchestrator;
 import com.agentdemo007.common.pipeline.PipelineResult;
 import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.common.response.UnifiedResponse;
+import com.agentdemo007.observability.AgentMetrics;
 import com.agentdemo007.persistence.mq.AuditProducer;
 import com.agentdemo007.persistence.mq.CapturingMessagePublisher;
 import com.agentdemo007.persistence.mq.ChatTurnFinalizer;
 import com.agentdemo007.persistence.mq.HistoryPersistProducer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
@@ -67,6 +69,27 @@ class ChatControllerTest {
         assertThat(data.reply()).isEqualTo("您好，订单已查到。");
         assertThat(data.degraded()).isFalse();
         assertThat(data.scenario()).isNull();
+    }
+
+    @Test
+    void chat_recordsChatRequestMetric_oncePerRequest() {
+        // 2026-09-17 回归钉：recordChatRequest 此前全工程零调用点——可观测台「对话请求」恒 0，
+        // /obs 页被 hasData 门控误判"尚无流量"。同步/流式都汇经 run()，恰好计数一次。
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        PipelineOrchestrator stub = new PipelineOrchestrator(List.of(), new DegradationPhraseCenter()) {
+            @Override
+            public PipelineResult run(PipelineContext context) {
+                return PipelineResult.ok("好的。");
+            }
+        };
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher));
+        ChatController controller = new ChatController(
+                stub, finalizer, objectMapper, new SyncTaskExecutor(), 120_000L, new AgentMetrics(registry));
+
+        controller.chat(new ChatRequest("sess-m", "你好"));
+
+        assertThat(registry.counter("agent.chat.requests").count()).isEqualTo(1.0);
     }
 
     @Test

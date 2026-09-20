@@ -46,15 +46,21 @@ public class IntentRecognizerImpl implements IntentRecognizer {
 
     @Override
     public IntentCategory recognize(String query, List<ChatMessage> history) {
-        // 1. 规则前置（含注入胜出，零 LLM）
-        Optional<IntentCategory> rule = ruleMatcher.match(query, history);
+        return recognize(query, query, history);
+    }
+
+    @Override
+    public IntentCategory recognize(String rulesQuery, String classifyQuery, List<ChatMessage> history) {
+        // 1. 规则前置（含注入胜出，零 LLM）——恒用 rulesQuery（调用方传 rawInput）：
+        //    词表按用户原始输入校准，改写产物喂词表会误命中（见接口 javadoc 事故注）。
+        Optional<IntentCategory> rule = ruleMatcher.match(rulesQuery, history);
         if (rule.isPresent()) {
             return rule.get();
         }
-        // 2. 小模型分类（规则无定论时升级）
+        // 2. 小模型分类（规则无定论时升级）——分类用改写后的自足 query（指代已消解）
         try {
-            String prompt = buildClassifyPrompt(query, history);
-            String reply = llm.decide(prompt);
+            String prompt = buildClassifyPrompt(classifyQuery, history);
+            String reply = llm.decide(prompt, "意图识别");
             Intent parsed = parseIntent(reply);
             if (parsed == null) {
                 log.debug("小模型输出不可解析，兜底 UNKNOWN：reply={}", reply);

@@ -43,4 +43,22 @@ public class ProductQueryService {
         }
         return result;
     }
+
+    /**
+     * 按关键词过滤可售商品（name/tags contains，大小写不敏感）——2026-09-17 定案：推荐场景
+     * 不得全量倾倒目录（「耳机推荐」连不相关手机壳一起推）；无匹配返空列表，由调方如实告知。
+     */
+    public List<ProductRecord> searchAvailable(String keyword) {
+        String k = (keyword == null) ? "" : keyword.trim().toLowerCase(java.util.Locale.ROOT);
+        List<ProductRecord> result = new ArrayList<>();
+        for (ProductRecord p : availableProducts()) {
+            boolean nameHit = p.name().toLowerCase(java.util.Locale.ROOT).contains(k);
+            boolean tagHit = p.tags().stream()
+                    .anyMatch(t -> t.toLowerCase(java.util.Locale.ROOT).contains(k));
+            if (nameHit || tagHit) {
+                result.add(p);
+            }
+        }
+        return result;
+    }
 }

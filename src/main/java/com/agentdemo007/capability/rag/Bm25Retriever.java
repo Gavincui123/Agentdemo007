@@ -35,7 +35,10 @@ public class Bm25Retriever implements Retriever {
         if (all == null || all.isEmpty()) {
             return List.of();
         }
-        List<RagFragment> ranked = bm25.rerank(query, all); // BM25 全语料打分 + 降序（含时效衰减）
+        // 检索位打分：BM25 打分副本（cosineScored=false——BM25 分非余弦口径，未重排时
+        // 不得凭它过 cosine 置信度终闸；被远程重排裁决后凭 relevance 入上下文）
+        List<RagFragment> ranked = bm25.score(query, all); // BM25 全语料打分 + 候选序（含时效衰减）
+        ranked.sort(java.util.Comparator.comparingDouble(RagFragment::score).reversed());
         if (topK >= 0 && ranked.size() > topK) {
             return new ArrayList<>(ranked.subList(0, topK));
         }

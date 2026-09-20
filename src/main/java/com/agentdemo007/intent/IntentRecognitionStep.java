@@ -54,10 +54,12 @@ public class IntentRecognitionStep implements PipelineStep {
             metrics.recordIntent(context.intent());
             return new StepOutcome.Proceed();
         }
-        String query = context.standardQuery() != null
+        // 规则层恒吃用户原始输入（词表按 rawInput 校准）；模型分类吃改写后的自足 query。
+        // 改写产物含历史内联词（如「订单」），喂词表会误命中 CHIT_CHAT 快路径（2026-09-17 实测事故）。
+        String classifyQuery = context.standardQuery() != null
                 ? context.standardQuery().text()
                 : context.rawInput();
-        IntentCategory category = recognizer.recognize(query, context.history());
+        IntentCategory category = recognizer.recognize(context.rawInput(), classifyQuery, context.history());
         context.setIntent(category.intent());
         context.setIntentConfidence(category.confidence());
 

@@ -79,7 +79,9 @@ class RoutePlanStepTest {
     }
 
     @Test
-    void prefersStandardQueryOverRawInput_inPrompt() {
+    void usesRawInputInPrompt_rewrittenQueryNeverEntersRouteModel() {
+        // 2026-09-17 定案回归钉：改写产物只供 RAG 检索；route_model 恒吃用户原话
+        // （指代消解由 route_model 结合 prompt 内 history 自行完成，不依赖改写内联）。
         ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
         when(planner.plan(nullable(String.class), anyString())).thenReturn(DETERMINISTIC_GENERAL);
         PipelineContext ctx = new PipelineContext("s1", "raw原始问题");
@@ -89,12 +91,12 @@ class RoutePlanStepTest {
         step.process(ctx);
         verify(planner).plan(nullable(String.class), prompt.capture());
 
-        assertThat(prompt.getValue()).contains("标准化后的问题");
-        assertThat(prompt.getValue()).doesNotContain("raw原始问题");
+        assertThat(prompt.getValue()).contains("raw原始问题");           // 原话必在
+        assertThat(prompt.getValue()).doesNotContain("标准化后的问题"); // 改写产物必不在
     }
 
     @Test
-    void fallsBackToRawInput_whenStandardQueryNull() {
+    void rawInputUsed_whenStandardQueryNull() {
         ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
         when(planner.plan(nullable(String.class), anyString())).thenReturn(DETERMINISTIC_GENERAL);
         PipelineContext ctx = ctxWith(Intent.OTHER, "原始问题"); // standardQuery 未设
@@ -137,7 +139,7 @@ class RoutePlanStepTest {
     void process_injectsPendingHint_whenPendingPresent() {
         InMemoryPendingWorkflowStore store = new InMemoryPendingWorkflowStore();
         store.put("s1", new com.agentdemo007.capability.workflow.PendingWorkflow("refund_request"));
-        RoutePlanStep step = new RoutePlanStep(new IntentRouteMapper(), new RoutePromptBuilder(new RoutePlanBaselines()), new RoutePlanner(new RoutePlanRuleMatcher(new RoutePlanContractValidator(), new RoutePlanBaselines()), new RoutePlanBaselines(), prompt -> java.util.Optional.empty()), store);
+        RoutePlanStep step = new RoutePlanStep(new IntentRouteMapper(), new RoutePromptBuilder(new RoutePlanBaselines()), new RoutePlanner(new RoutePlanRuleMatcher(new RoutePlanContractValidator(), new RoutePlanBaselines()), new RoutePlanBaselines(), prompt -> java.util.Optional.empty()), store, false);
 
         PipelineContext ctx = new PipelineContext("s1", "ORD-001");
         step.process(ctx);
@@ -152,5 +154,105 @@ class RoutePlanStepTest {
         PipelineContext ctx = new PipelineContext("s1", rawInput);
         ctx.setIntent(intent);
         return ctx;
+    }
+
+    // ---- 2026-09-18 售后能力收敛（routePlan 契约：澄清/工具/RAG 在此定死，下游只执行）----
+
+    private static RoutePlanCandidate candidate(String intent, boolean needsRag, boolean needsTools,
+                                                boolean ambiguous, String secondaryIntent) {
+        return new RoutePlanCandidate(intent, needsRag, needsTools,
+                java.util.List.of(), java.util.List.of(),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, ambiguous, secondaryIntent);
+    }
+
+    @Test
+    void converge_afterSaleNoOrderId_skipsRagAndTools() {
+        // 无订单号 → 工作流将澄清/衔接（presetReply 终态）：主链 RAG 漏斗与工具探测全跳过
+        // （实测 T3：澄清轮白跑 8s RAG + 17.8s 工具探测小模型）
+        RoutePlanStep converging = new RoutePlanStep(mapper, promptBuilder, planner, null, true);
+        when(planner.plan(nullable(String.class), anyString()))
+                .thenReturn(new RoutePlan(candidate("return_request", true, true, false, null),
+                        RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, java.util.List.of()));
+        PipelineContext ctx = ctxWith(Intent.OTHER, "我要退货"); // 无订单号
+
+        StepOutcome out = converging.process(ctx);
+
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        assertThat(ctx.routePlan().needsRag()).isFalse();
+        assertThat(ctx.routePlan().needsBusinessTools()).isFalse();
+        assertThat(ctx.routePlan().intent()).isEqualTo("return_request"); // 其余字段不动
+        assertThat(ctx.routePlan().requiresWorkflow()).isTrue();
+    }
+
+    @Test
+    void converge_afterSaleWithOrderIdInStandardQuery_keepsTools() {
+        // 订单号在改写产物（记忆补全）里 → 保留工具取数（参考来源/事实），RAG 仍收敛关
+        RoutePlanStep converging = new RoutePlanStep(mapper, promptBuilder, planner, null, true);
+        when(planner.plan(nullable(String.class), anyString()))
+                .thenReturn(new RoutePlan(candidate("refund_request", true, true, false, null),
+                        RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, java.util.List.of()));
+        PipelineContext ctx = ctxWith(Intent.OTHER, "我要退款");
+        ctx.setStandardQuery(StandardQuery.of("我要退款（订单号：ORD-001）"));
+
+        converging.process(ctx);
+
+        assertThat(ctx.routePlan().needsRag()).isFalse();
+        assertThat(ctx.routePlan().needsBusinessTools()).isTrue();
+    }
+
+    @Test
+    void converge_ambiguousPlan_skipsRagAndTools() {
+        // ambiguous（菜单澄清终态）→ RAG/工具全跳过（任何意图）
+        RoutePlanStep converging = new RoutePlanStep(mapper, promptBuilder, planner, null, true);
+        when(planner.plan(nullable(String.class), anyString()))
+                .thenReturn(new RoutePlan(candidate("refund_request", true, true, true, null),
+                        RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, java.util.List.of()));
+
+        PipelineContext ctx = ctxWith(Intent.OTHER, "算了不退了");
+        converging.process(ctx);
+
+        assertThat(ctx.routePlan().needsRag()).isFalse();
+        assertThat(ctx.routePlan().needsBusinessTools()).isFalse();
+    }
+
+    @Test
+    void converge_nonAfterSaleIntent_untouched() {
+        // 非售后意图（含并发腿 secondaryIntent≠null）不收敛，候选值原样透传
+        RoutePlanStep converging = new RoutePlanStep(mapper, promptBuilder, planner, null, true);
+        RoutePlan faq = new RoutePlan(candidate("faq", true, false, false, null),
+                RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, java.util.List.of());
+        when(planner.plan(nullable(String.class), anyString())).thenReturn(faq);
+
+        PipelineContext ctx = ctxWith(Intent.OTHER, "退货政策是什么");
+        converging.process(ctx);
+
+        assertThat(ctx.routePlan()).isSameAs(faq);
+    }
+
+    @Test
+    void converge_concurrentLeg_untouched() {
+        RoutePlanStep converging = new RoutePlanStep(mapper, promptBuilder, planner, null, true);
+        RoutePlan concurrent = new RoutePlan(candidate("refund_request", true, true, false, "product_query"),
+                RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, java.util.List.of());
+        when(planner.plan(nullable(String.class), anyString())).thenReturn(concurrent);
+
+        PipelineContext ctx = ctxWith(Intent.OTHER, "退款 ORD-001 想买耳机");
+        converging.process(ctx);
+
+        assertThat(ctx.routePlan()).isSameAs(concurrent);
+    }
+
+    @Test
+    void converge_workflowDisabled_untouched() {
+        // 工作流未启用：不做收敛（旧链路 OutputStep 需要主链 RAG/工具事实）
+        RoutePlan passthrough = new RoutePlan(candidate("refund_request", true, true, false, null),
+                RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, java.util.List.of());
+        when(planner.plan(nullable(String.class), anyString())).thenReturn(passthrough);
+
+        PipelineContext ctx = ctxWith(Intent.OTHER, "我要退货");
+        step.process(ctx);
+
+        assertThat(ctx.routePlan()).isSameAs(passthrough);
     }
 }

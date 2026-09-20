@@ -31,6 +31,8 @@ public enum AuditEventType {
     OUTPUT_FALLBACK,
     /** RAG 跳过/召回空（不阻塞降级）。 */
     RAG_SKIP,
+    /** 无依据拒答（[[refusal-design]]：知识 grounding 未命中 + strict 模式短路，业务级拒答非降级）。 */
+    REFUSAL,
     /** 流水线步骤降级短路（DEGRADATION，通用降级留痕）。 */
     DEGRADATION,
     /** 未预期异常收口到 INTERNAL 话术（全局兜底）。 */

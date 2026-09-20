@@ -100,6 +100,11 @@ public class LlmProperties {
         private String largeModel;
         private String smallModel;
         private Map<String, Object> disableThinkingParams = Map.of();
+        /**
+         * 采样温度（请求体 temperature）。默认 0.2（2026-09-17 用户定案：准确优先，客服场景
+         * 不需要发散采样）；可按 provider 在 dataId 覆盖（如创作类场景调高）。
+         */
+        private Double temperature = 0.2D;
 
         public String getId() { return id; }
         public void setId(String id) { this.id = id; }
@@ -111,6 +116,11 @@ public class LlmProperties {
         public void setLargeModel(String largeModel) { this.largeModel = largeModel; }
         public String getSmallModel() { return smallModel; }
         public void setSmallModel(String smallModel) { this.smallModel = smallModel; }
+
+        public Double getTemperature() { return temperature; }
+        public void setTemperature(Double temperature) {
+            this.temperature = (temperature != null) ? temperature : 0.2D;
+        }
 
         /**
          * 该 provider 关思考的请求体参数（每请求 {@code disableThinking=true} 时合并进 body）。

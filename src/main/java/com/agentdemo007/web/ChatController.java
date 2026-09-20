@@ -7,6 +7,7 @@ import com.agentdemo007.common.pipeline.PipelineResult;
 import com.agentdemo007.common.progress.ProgressEmitter;
 import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.common.response.UnifiedResponse;
+import com.agentdemo007.observability.AgentMetrics;
 import com.agentdemo007.persistence.mq.ChatTurnFinalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,33 +73,45 @@ public class ChatController {
     private final ChatTurnFinalizer finalizer;
     private final ObjectMapper objectMapper;
     private final TaskExecutor sseTaskExecutor;
+    private final AgentMetrics metrics;
     private final long sseTimeoutMs;
 
-    /** 测试便利构造（缺省 SSE 超时 120s）。 */
+    /** 测试便利构造（缺省 SSE 超时 120s + 指标空实现）。 */
     public ChatController(PipelineExecutor pipelineExecutor, ChatTurnFinalizer finalizer,
                           ObjectMapper objectMapper, TaskExecutor sseTaskExecutor) {
-        this(pipelineExecutor, finalizer, objectMapper, sseTaskExecutor, DEFAULT_SSE_TIMEOUT_MS);
+        this(pipelineExecutor, finalizer, objectMapper, sseTaskExecutor, DEFAULT_SSE_TIMEOUT_MS, AgentMetrics.NO_OP);
     }
 
     @Autowired
     public ChatController(PipelineExecutor pipelineExecutor, ChatTurnFinalizer finalizer,
                           ObjectMapper objectMapper,
                           @Qualifier("sseTaskExecutor") TaskExecutor sseTaskExecutor,
-                          @Value("${app.sse.timeout-ms:120000}") long sseTimeoutMs) {
+                          @Value("${app.sse.timeout-ms:120000}") long sseTimeoutMs,
+                          AgentMetrics metrics) {
         this.pipelineExecutor = pipelineExecutor;
         this.finalizer = finalizer;
         this.objectMapper = objectMapper;
         this.sseTaskExecutor = sseTaskExecutor;
+        this.metrics = metrics;
         this.sseTimeoutMs = sseTimeoutMs;
     }
 
     @PostMapping("/chat")
     public UnifiedResponse chat(@RequestBody ChatRequest request) {
+        logArrival(request, "sync");
         return UnifiedResponse.success(run(request, ProgressEmitter.NO_OP, resolveSessionId(request)));
+    }
+
+    /** 请求到达打点（2026-09-18）：此前首条日志=查询改写 LLM 完成（晚 0.8~2.6s），
+     *  "发起会话→首条日志"的延迟无法区分传输段与管线段——本行把到达时刻显式落日志。 */
+    private void logArrival(ChatRequest request, String channel) {
+        log.info("对话请求到达：channel={} sessionId={} msgLen={}", channel,
+                request.sessionId(), (request.message() == null) ? 0 : request.message().length());
     }
 
     @PostMapping(path = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(@RequestBody ChatRequest request) {
+        logArrival(request, "sse");
         // sessionId 在此计算一次并贯穿超时回调与流水线（request 无会话时生成随机 id，
         // 两处各自生成会得到不同 id——超时兜底话术须回传流水线同款 sessionId）
         String sessionId = resolveSessionId(request);
@@ -172,6 +185,8 @@ public class ChatController {
 
     /** 跑流水线并把终端结果 + 会话标识收口为 {@link ChatResponse}；进度经注入 emitter 发射。 */
     private ChatResponse run(ChatRequest request, ProgressEmitter progress, String sessionId) {
+        // 接入层对话请求计数（POST /chat 与 /chat/stream 都汇经此）——可观测台「对话请求」读数源
+        metrics.recordChatRequest();
         // 响应时间统计（后端口径）：totalMs=收到请求→终端回复就绪；firstTokenMs=首个流式 token
         long startMs = System.currentTimeMillis();
         FirstTokenTimingEmitter timed = new FirstTokenTimingEmitter(progress, startMs);

@@ -17,16 +17,17 @@ import java.util.Properties;
  * <p>属性门控互斥：{@code app.prompt.source=nacos}→装配 {@link NacosPromptSource}（typed {@code AiService}
  * 拉取，SDK 内置 md5 缓存 + gRPC 热推，按 latest/版本/标签）；缺省/{@code local}→{@code GatewayConfig}
  * 装配 {@link LocalPromptSource}（dev 内存源）。两源同实现 {@link PromptRegistry}，消费方
- * （{@link com.agentdemo007.context.SystemAnchorLayer} 系统提示词 +
- * {@link com.agentdemo007.capability.workflow.WorkflowExecutionStep} 澄清话术）对源无感，registry 空则回退硬编码。
+ * （{@link com.agentdemo007.context.SystemAnchorLayer} 系统提示词、
+ * {@code WorkflowExecutionStep} 经 {@code SystemPromptAssembler} 取澄清指令）对源无感，registry 空则回退硬编码兜底。
  *
  * <p>②每步降级：AiService 构造抛（Nacos 不可达/缺凭据）→回退 {@link LocalPromptSource}，不阻塞 context 启动
  * （消费方见空 registry→回退硬编码默认）。{@link AiServiceFactory} seam 让构造可注入假桩单测（无真实 Nacos）。
  *
  * <p>Nacos 连接参数复用 {@code spring.nacos.config.*}（与配置中心同源，非另立一套），经 {@link #buildNacosProps}
  * 翻成 SDK {@link PropertyKeyConst} 键。promptKey 命名：{@code system-prompt-segments}
- * （分段式系统提示词片段清单，bare YAML 数组，经 {@code SystemPromptAssembler} 装配）、
- * {@code clarify-return}/{@code clarify-refund}（澄清话术），在 Nacos 控制台「AI 资源→提示词模板」按 key 建模板。
+ * （分段式系统提示词片段清单，bare YAML 数组，经 {@code SystemPromptAssembler} 装配），
+ * 在 Nacos 控制台「AI 资源→提示词模板」按 key 建模板。澄清话术不设独立模板 key——由大模型按
+ * 片段指令现场生成（见 {@code WorkflowExecutionStep}，2026-09-17 用户裁决定案），硬编码文本仅作 ②降级兜底。
  */
 @Configuration
 public class PromptSourceConfig {

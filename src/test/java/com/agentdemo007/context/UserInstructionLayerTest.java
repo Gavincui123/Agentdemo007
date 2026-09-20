@@ -13,16 +13,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 用户指令层测试（第五层·UserInstructionLayer）。
  *
- * <p>产出单条 {@link ChatMessage.User}：取改写后的标准化 Query（{@code standardQuery}），
- * 缺失则回退 {@code rawInput}（②每步降级），再经 {@link PromptSanitizer} 包裹定界符——
- * 使用户指令隔离在数据区、无法逃逸成系统指令（§5.5 隔离 / §5.3.1 注入防御）。
+ * <p>产出单条 {@link ChatMessage.User}：<b>恒取用户原话（rawInput）</b>——2026-09-17 定案：
+ * 回答生成 LLM 必须看到原话，改写产物（standardQuery）只供 RAG 检索、不得进入回答层；
+ * 原话经 {@link PromptSanitizer} 包裹定界符——用户指令隔离在数据区、无法逃逸成系统指令。
  */
 class UserInstructionLayerTest {
 
     private final PromptSanitizer sanitizer = new PromptSanitizer();
 
     @Test
-    void standardQueryNull_usesRawInputSanitized() {
+    void rawInput_sanitized() {
         UserInstructionLayer layer = new UserInstructionLayer(sanitizer);
         PipelineContext ctx = new PipelineContext("s", "你好");
 
@@ -37,16 +37,16 @@ class UserInstructionLayerTest {
     }
 
     @Test
-    void standardQueryPresent_usesStandardQueryTextNotRawInput() {
+    void standardQueryPresent_stillUsesRawInput_rewrittenNeverEntersAnswerLayer() {
+        // 定案回归钉：改写产物（含内联历史语境词）不得替换原话进回答 LLM——防改写漂移冒充用户发言
         UserInstructionLayer layer = new UserInstructionLayer(sanitizer);
         PipelineContext ctx = new PipelineContext("s", "它怎么样");
         ctx.setStandardQuery(StandardQuery.of("Q3 销售额怎么样"));
 
-        List<ChatMessage> msgs = layer.build(ctx);
+        String content = layer.build(ctx).get(0).content();
 
-        String content = msgs.get(0).content();
-        assertThat(content).contains("Q3 销售额怎么样");
-        assertThat(content).doesNotContain("它怎么样");
+        assertThat(content).contains("它怎么样");           // 原话必在
+        assertThat(content).doesNotContain("Q3 销售额怎么样"); // 改写产物必不在
     }
 
     @Test

@@ -13,52 +13,71 @@ import com.agentdemo007.gateway.registry.ModelRegistry;
 import com.agentdemo007.resilience.CircuitBreaker;
 import com.agentdemo007.resilience.ToolCircuitBreaker;
 import com.agentdemo007.resilience.ToolCircuitOpenException;
+import com.agentdemo007.resilience.ToolHttpException;
+import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.agent.tool.ToolSpecifications;
 import dev.langchain4j.service.tool.DefaultToolExecutor;
-import dev.langchain4j.service.tool.ToolExecutor;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 证 {@link ToolCallExecutor}（② Slice 3·option A 数据步·替手撸 ToolExecutor 角色）：单次前向
- * {@link GatewayChatModel#doChat}（messages=[query] + tools=specs）→ 模型出 {@code tool_calls} 则经
- * {@link ResilientToolExecutor}（包 {@link DefaultToolExecutor}）执行真 {@code @Tool} → 返回结构化结果
- * （{@link ToolCallResult}，带 category，[[business-tools-workflow-dag]] §2.2）；无 {@code tool_calls} → 空。
- * breaker OPEN → 透传 {@link ToolCircuitOpenException}（交 {@code ToolExecutionStep} 收口 {@code TOOL_FAILURE}）。
+ * {@link ToolCallExecutor} 测试——<b>有界 Agent loop</b>（2026-09-17 推翻单次前向·用户裁决）。
  *
- * <p>退役手撸 Detector/ParamParser/SchemaValidator/Reparser：模型直接出结构化 {@code tool_calls}（含 JSON 参数），
- * 无关键词检测/手解析/手校验/重解析循环——schema 由 {@code @Tool} 注解经
- * {@link ToolSpecifications#toolSpecificationFrom} 生成，参数强转+反射调归 {@link DefaultToolExecutor}
- * （[[dont-hardwrite-use-dep-methods]]：库方法优先；[[langchain4j-boot4-compat-findings]]：seam=委托非重写）。
- *
- * <p>seam：{@link ToolCallExecutor#buildChatModel()} prod 按 CHIT_CHAT 路由（小模型+关思考，工具探测=决策调用，
- * 镜像 {@code ChatLlmService.decide}）从 ModelConfigCenter 解析 primary/failover/flow；测试覆写为 scripted
- * （镜像 {@code GatewayChatModelAiServicesLoopTest} 的 ScriptedGatewayExecutor：真网关栈 + 脚本化执行器出罐装
- * tool_calls），证 dispatch 逻辑免 ModelConfigCenter 装配耦合。工具探测不驱动循环（区别 AiServices 自驱动
- * agent 模式）——单次前向出结果作数据，pipeline 尾零改（[[degradation-and-eval-principles]]：收口最重要）。
+ * <p>证 loop 骨架：探测（{@code GatewayChatModel#doChat}，messages 累积多轮）→ 执行
+ * （{@link ResilientToolExecutor} 包 propagating/wrap 双开的 {@code DefaultToolExecutor}）→
+ * 失败回喂（{@code AiMessage(tool_calls)} + {@code ToolExecutionResultMessage} 配对回传）→
+ * 模型自纠正/澄清/轮次耗尽三出口。脚本化网关出多轮罐装 {@link LlmResponse}（队列化执行器），
+ * 免 ModelConfigCenter 装配耦合。韧性语义（重试/退避/熔断/超时）详 {@link ResilientToolExecutorTest}
+ * ——此处 noRetry 口径隔离 loop 语义。
  */
 class ToolCallExecutorTest {
 
-    /** 脚本化执行器：返回罐装 LlmResponse（出 tool_calls 或纯文本），证真网关栈经 GatewayChatModel 翻译。 */
-    static final class ScriptedModelExecutor implements ModelExecutor {
-        private final LlmResponse canned;
+    /** 队列化脚本执行器：按序弹出罐装 LlmResponse（多轮 loop 脚本），记录模型调用次数。 */
+    static final class QueuedModelExecutor implements ModelExecutor {
+        private final Deque<LlmResponse> script;
+        final AtomicInteger calls = new AtomicInteger();
 
-        ScriptedModelExecutor(LlmResponse canned) {
-            this.canned = canned;
+        QueuedModelExecutor(List<LlmResponse> script) {
+            this.script = new ArrayDeque<>(script);
         }
 
         @Override
         public LlmResponse execute(LlmRequest request) {
-            return canned;
+            calls.incrementAndGet();
+            return script.poll();
+        }
+    }
+
+    /** @Tool 桩：前 failTimes 次抛 ToolHttpException(status)（propagate 后经 LC4j 包装），其后成功。 */
+    static class FlakyHttpTool {
+        final AtomicInteger calls = new AtomicInteger();
+        final int failTimes;
+        final int status;
+
+        FlakyHttpTool(int failTimes, int status) {
+            this.failTimes = failTimes;
+            this.status = status;
+        }
+
+        @Tool("模拟外部系统查询")
+        @SuppressWarnings("unused")
+        String call() {
+            if (calls.incrementAndGet() <= failTimes) {
+                throw new ToolHttpException(status, "外部系统错误 HTTP " + status);
+            }
+            return "外部数据";
         }
     }
 
@@ -66,22 +85,24 @@ class ToolCallExecutorTest {
         return new FlowControlPolicy("nolimit", Integer.MAX_VALUE, Integer.MAX_VALUE, Duration.ofSeconds(60));
     }
 
-    private static ToolSpecification triangleSpec() throws Exception {
-        Method method = TriangleAreaTool.class.getDeclaredMethod("triangleArea", double.class, double.class);
-        return ToolSpecifications.toolSpecificationFrom(method);
+    /** propagating/wrap 双开原语 + noRetry 韧性（隔离 loop 语义与重试语义）。 */
+    private static ResilientToolExecutor noRetryExecutor(Object bean, Method method,
+                                                         ToolCircuitBreaker breaker) throws Exception {
+        DefaultToolExecutor delegate = new DefaultToolExecutor.Builder()
+                .object(bean).originalMethod(method).methodToInvoke(method)
+                .wrapToolArgumentsExceptions(Boolean.TRUE)
+                .propagateToolExecutionExceptions(Boolean.TRUE)
+                .build();
+        return new ResilientToolExecutor(delegate, breaker); // 兼容构造：noRetry/无超时
     }
 
-    /** 建 ToolCallExecutor（buildChatModel 覆写为 scripted gateway 出 canned 响应）。 */
-    private ToolCallExecutor executorWith(LlmResponse canned, ToolCircuitBreaker breaker, ToolSpecification spec,
-                                          TriangleAreaTool tool) throws Exception {
-        Method method = TriangleAreaTool.class.getDeclaredMethod("triangleArea", double.class, double.class);
+    /** 工具环节受测对象：脚本化网关（buildChatModel 覆写）+ 注入执行器映射 + 轮次上限。 */
+    private ToolCallExecutor executorWith(QueuedModelExecutor modelExec,
+                                          Map<String, ResilientToolExecutor> executors,
+                                          List<ToolSpecification> specs, int maxRounds) {
         UnifiedModelGateway gateway = new UnifiedModelGateway(
-                new ScriptedModelExecutor(canned), new TokenBudgetChecker(),
-                new com.agentdemo007.gateway.core.FailoverExecutor());
-        // 韧性装饰：ResilientToolExecutor 包 DefaultToolExecutor（证真派发原语执行真 @Tool 算出 6）
-        ToolExecutor resilient = new ResilientToolExecutor(new DefaultToolExecutor(tool, method), breaker);
-        // categoryMap 空 → triangleArea 经 getOrDefault 默认 COMPUTE（[[business-tools-workflow-dag]] §2.2）
-        return new ToolCallExecutor(null, null, 512, List.of(spec), Map.of(spec.name(), resilient), Map.of()) {
+                modelExec, new TokenBudgetChecker(), new com.agentdemo007.gateway.core.FailoverExecutor());
+        return new ToolCallExecutor(gateway, null, 512, specs, executors, Map.of(), maxRounds) {
             @Override
             protected GatewayChatModel buildChatModel() {
                 return new GatewayChatModel(gateway, "test-small", 512,
@@ -90,52 +111,73 @@ class ToolCallExecutorTest {
         };
     }
 
+    private static ToolExecutionRequest call(String id, String name, String arguments) {
+        return ToolExecutionRequest.builder().id(id).name(name).arguments(arguments).build();
+    }
+
+    private static LlmResponse toolCallResp(ToolExecutionRequest... calls) {
+        return new LlmResponse("test-small", null, 5, List.of(calls));
+    }
+
+    private static LlmResponse textResp(String text) {
+        return new LlmResponse("test-small", text, 8, List.of());
+    }
+
+    // ---- 基线（单轮即止路径）----
+
     @Test
     void execute_toolCall_dispatchesRealTool_returnsResults() throws Exception {
         TriangleAreaTool tool = new TriangleAreaTool();
-        ToolSpecification spec = triangleSpec();
+        Method m = TriangleAreaTool.class.getDeclaredMethod("triangleArea", double.class, double.class);
+        ToolSpecification spec = ToolSpecifications.toolSpecificationFrom(m);
         ToolCircuitBreaker breaker = new ToolCircuitBreaker(2, 30000, () -> 0);
-        ToolExecutionRequest call = ToolExecutionRequest.builder()
-                .name(spec.name()).arguments("{\"base\":3,\"height\":4}").build();
-        LlmResponse canned = new LlmResponse("test-small", null, 5, List.of(call));
+        QueuedModelExecutor model = new QueuedModelExecutor(List.of(
+                toolCallResp(call("c1", "triangleArea", "{\"base\":3,\"height\":4}"))));
+        ToolCallExecutor executor = executorWith(model,
+                Map.of("triangleArea", noRetryExecutor(tool, m, breaker)), List.of(spec), 2);
 
-        List<ToolCallResult> results = executorWith(canned, breaker, spec, tool).execute("底3高4的三角形面积");
+        ToolTurn turn = executor.execute("底3高4的三角形面积");
 
-        // 真派发原语（DefaultToolExecutor）+ 真 @Tool 算出 6，经网关栈单次前向
-        assertThat(results).hasSize(1);
-        assertThat(results.get(0).content()).isEqualTo("6");
-        // triangleArea 无 @ToolChannel → COMPUTE 默认（[[business-tools-workflow-dag]] §2.2）
-        assertThat(results.get(0).category()).isEqualTo(ToolCategory.COMPUTE);
-        // 韧性记账不跳闸（工具成功 → recordSuccess）
-        assertThat(breaker.state(spec.name())).isEqualTo(CircuitBreaker.State.CLOSED);
+        // 真派发原语（propagating DefaultToolExecutor）+ 真 @Tool 算出 6
+        assertThat(turn.results()).hasSize(1);
+        assertThat(turn.results().get(0).content()).isEqualTo("6");
+        assertThat(turn.results().get(0).isError()).isFalse();
+        assertThat(turn.loopReply()).isNull();
+        // 全成功即停：仅 1 次模型调用（不空转烧轮次）
+        assertThat(model.calls.get()).isEqualTo(1);
+        assertThat(breaker.state("triangleArea")).isEqualTo(CircuitBreaker.State.CLOSED);
     }
 
     @Test
-    void execute_noToolCall_returnsEmpty() throws Exception {
+    void execute_noToolCall_returnsEmptyTurn() throws Exception {
         TriangleAreaTool tool = new TriangleAreaTool();
-        ToolSpecification spec = triangleSpec();
+        Method m = TriangleAreaTool.class.getDeclaredMethod("triangleArea", double.class, double.class);
         ToolCircuitBreaker breaker = new ToolCircuitBreaker(2, 30000, () -> 0);
-        // 模型纯文本回复（无 tool_calls）→ 无工具触发 → 空（交下游正常对话）
-        LlmResponse canned = new LlmResponse("test-small", "这个问题不需要工具", 8, List.of());
+        QueuedModelExecutor model = new QueuedModelExecutor(List.of(textResp("这个问题不需要工具")));
+        ToolCallExecutor executor = executorWith(model,
+                Map.of("triangleArea", noRetryExecutor(tool, m, breaker)),
+                List.of(ToolSpecifications.toolSpecificationFrom(m)), 2);
 
-        List<ToolCallResult> results = executorWith(canned, breaker, spec, tool).execute("你好");
+        ToolTurn turn = executor.execute("你好");
 
-        assertThat(results).isEmpty();
+        assertThat(turn.results()).isEmpty(); // 正常对话，不触发工具
+        assertThat(turn.loopReply()).isNull();
+        assertThat(model.calls.get()).isEqualTo(1);
     }
 
     @Test
     void execute_breakerOpen_propagatesToolCircuitOpenException() throws Exception {
         TriangleAreaTool tool = new TriangleAreaTool();
-        ToolSpecification spec = triangleSpec();
-        // threshold=1：一次 recordFailure 即 OPEN
+        Method m = TriangleAreaTool.class.getDeclaredMethod("triangleArea", double.class, double.class);
+        ToolSpecification spec = ToolSpecifications.toolSpecificationFrom(m);
         ToolCircuitBreaker breaker = new ToolCircuitBreaker(1, 30000, () -> 0);
         breaker.recordFailure(spec.name()); // 预开
-        ToolExecutionRequest call = ToolExecutionRequest.builder()
-                .name(spec.name()).arguments("{\"base\":3,\"height\":4}").build();
-        LlmResponse canned = new LlmResponse("test-small", null, 5, List.of(call));
+        QueuedModelExecutor model = new QueuedModelExecutor(List.of(
+                toolCallResp(call("c1", "triangleArea", "{\"base\":3,\"height\":4}"))));
+        ToolCallExecutor executor = executorWith(model,
+                Map.of("triangleArea", noRetryExecutor(tool, m, breaker)), List.of(spec), 2);
 
-        // breaker OPEN → ResilientToolExecutor 快速失败抛 ToolCircuitOpenException → 透传交 ToolExecutionStep 收口
-        assertThatThrownBy(() -> executorWith(canned, breaker, spec, tool).execute("底3高4的三角形面积"))
+        assertThatThrownBy(() -> executor.execute("底3高4的三角形面积"))
                 .isInstanceOf(ToolCircuitOpenException.class)
                 .hasMessageContaining(spec.name());
     }
@@ -143,18 +185,104 @@ class ToolCallExecutorTest {
     @Test
     void execute_noChatRoute_returnsEmpty_gracefulDegrade() throws Exception {
         // dev/未装配：center 未 refresh（current=null）→ routeFor(CHIT_CHAT) 空 → buildChatModel 返 null
-        // → execute 降级返空（不抛、不阻塞主链路，交下游正常对话）
         TriangleAreaTool tool = new TriangleAreaTool();
-        ToolSpecification spec = triangleSpec();
+        Method m = TriangleAreaTool.class.getDeclaredMethod("triangleArea", double.class, double.class);
         ToolCircuitBreaker breaker = new ToolCircuitBreaker(2, 30000, () -> 0);
-        Method method = TriangleAreaTool.class.getDeclaredMethod("triangleArea", double.class, double.class);
-        ToolExecutor resilient = new ResilientToolExecutor(new DefaultToolExecutor(tool, method), breaker);
         ModelConfigCenter emptyCenter = new ModelConfigCenter(() -> null, new ModelRegistry());
         ToolCallExecutor executor = new ToolCallExecutor(null, emptyCenter, 512,
-                List.of(spec), Map.of(spec.name(), resilient), Map.of());
+                List.of(ToolSpecifications.toolSpecificationFrom(m)),
+                Map.of("triangleArea", noRetryExecutor(tool, m, breaker)), Map.of(), 2);
 
-        List<ToolCallResult> results = executor.execute("底3高4的三角形面积");
+        assertThat(executor.execute("底3高4的三角形面积").results()).isEmpty();
+    }
 
-        assertThat(results).isEmpty();
+    // ---- Agent loop：失败回喂自纠正 ----
+
+    @Test
+    void loop_http500Error_fedBack_modelSelfCorrects_secondCallSucceeds() throws Exception {
+        FlakyHttpTool tool = new FlakyHttpTool(1, 500); // 首调 500，重调成功
+        Method m = FlakyHttpTool.class.getDeclaredMethod("call");
+        ToolSpecification spec = ToolSpecifications.toolSpecificationFrom(m);
+        ToolCircuitBreaker breaker = new ToolCircuitBreaker(5, 30000, () -> 0); // 阈值高于 loop 轮次
+        QueuedModelExecutor model = new QueuedModelExecutor(List.of(
+                toolCallResp(call("c1", "call", "{}")),
+                toolCallResp(call("c2", "call", "{}"))));
+        ToolCallExecutor executor = executorWith(model,
+                Map.of("call", noRetryExecutor(tool, m, breaker)), List.of(spec), 2);
+
+        ToolTurn turn = executor.execute("查外部数据");
+
+        // 第 1 轮错误结果（结构化回喂）+ 第 2 轮自纠正成功
+        assertThat(turn.results()).hasSize(2);
+        assertThat(turn.results().get(0).isError()).isTrue();
+        assertThat(turn.results().get(0).error().kind()).isEqualTo(ToolErrorKind.HTTP_5XX);
+        assertThat(turn.results().get(0).content()).contains("\"toolError\":true");
+        assertThat(turn.results().get(1).content()).isEqualTo("外部数据");
+        assertThat(turn.loopReply()).isNull();
+        assertThat(model.calls.get()).isEqualTo(2); // 两轮探测（失败回喂触发第二轮）
+        assertThat(tool.calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void loop_modelGivesUpWithText_capturedAsLoopReply_clarificationExit() throws Exception {
+        FlakyHttpTool tool = new FlakyHttpTool(99, 400); // 恒 400（不重试、不记熔断）
+        Method m = FlakyHttpTool.class.getDeclaredMethod("call");
+        ToolSpecification spec = ToolSpecifications.toolSpecificationFrom(m);
+        ToolCircuitBreaker breaker = new ToolCircuitBreaker(5, 30000, () -> 0);
+        QueuedModelExecutor model = new QueuedModelExecutor(List.of(
+                toolCallResp(call("c1", "call", "{}")),
+                textResp("请问您要查询哪个订单号？"))); // 模型放弃自纠正 → 转澄清
+        ToolCallExecutor executor = executorWith(model,
+                Map.of("call", noRetryExecutor(tool, m, breaker)), List.of(spec), 2);
+
+        ToolTurn turn = executor.execute("帮我查一下");
+
+        assertThat(turn.results()).hasSize(1);
+        assertThat(turn.results().get(0).error().kind()).isEqualTo(ToolErrorKind.HTTP_4XX);
+        // 澄清出口：模型文本交终答 LLM 整合（系统不吞异常，异常信息交 LLM 做策略/回复客户）
+        assertThat(turn.loopReply()).isEqualTo("请问您要查询哪个订单号？");
+        assertThat(model.calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void loop_roundsExhausted_stopsWithAccumulatedErrors() throws Exception {
+        FlakyHttpTool tool = new FlakyHttpTool(99, 500); // 恒 500
+        Method m = FlakyHttpTool.class.getDeclaredMethod("call");
+        ToolSpecification spec = ToolSpecifications.toolSpecificationFrom(m);
+        ToolCircuitBreaker breaker = new ToolCircuitBreaker(5, 30000, () -> 0);
+        QueuedModelExecutor model = new QueuedModelExecutor(List.of(
+                toolCallResp(call("c1", "call", "{}")),
+                toolCallResp(call("c2", "call", "{}"))));
+        ToolCallExecutor executor = executorWith(model,
+                Map.of("call", noRetryExecutor(tool, m, breaker)), List.of(spec), 2);
+
+        ToolTurn turn = executor.execute("查外部数据");
+
+        // 轮次耗尽：失败结果累计交终答 LLM 如实说明（不无限循环、不抛出）
+        assertThat(turn.results()).hasSize(2);
+        assertThat(turn.results()).allMatch(ToolCallResult::isError);
+        assertThat(turn.loopReply()).isNull();
+        assertThat(model.calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void loop_hallucinatedToolName_errorResultFedBack_thenSelfCorrects() throws Exception {
+        TriangleAreaTool tool = new TriangleAreaTool();
+        Method m = TriangleAreaTool.class.getDeclaredMethod("triangleArea", double.class, double.class);
+        ToolSpecification spec = ToolSpecifications.toolSpecificationFrom(m);
+        ToolCircuitBreaker breaker = new ToolCircuitBreaker(5, 30000, () -> 0);
+        QueuedModelExecutor model = new QueuedModelExecutor(List.of(
+                toolCallResp(call("c1", "noSuchTool", "{}")), // 幻觉工具名
+                toolCallResp(call("c2", "triangleArea", "{\"base\":3,\"height\":4}"))));
+        ToolCallExecutor executor = executorWith(model,
+                Map.of("triangleArea", noRetryExecutor(tool, m, breaker)), List.of(spec), 2);
+
+        ToolTurn turn = executor.execute("算三角形面积");
+
+        assertThat(turn.results()).hasSize(2);
+        assertThat(turn.results().get(0).error().kind()).isEqualTo(ToolErrorKind.UNKNOWN_TOOL);
+        assertThat(turn.results().get(0).error().attempts()).isZero(); // 未执行
+        assertThat(turn.results().get(1).content()).isEqualTo("6"); // 改选真工具成功
+        assertThat(model.calls.get()).isEqualTo(2);
     }
 }

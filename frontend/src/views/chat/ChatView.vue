@@ -1,16 +1,24 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, computed } from 'vue'
+import { ref, nextTick, watch, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useChatStore } from '../../stores/chat'
 import MessageBubble from '../../components/MessageBubble.vue'
+import { fetchGateStatus, hasAccessCode, type GateStatus } from '../../api/gate'
 
 /**
  * 对话视图（Phase 16）——前端对话主界面。
  *
  * <p>消息流 + 输入器 + 同步/流式切换 + 空态示例（绑定后端 RAG 种子场景）。
  * 流式发送可中止（AbortController→SSE signal）。降级/话术短路由 store 兜底为
- * system/降级气泡（①②），视图层不感知错误码。traceId 经气泡 meta 呈现。
+ * system/降级气泡（①②），视图层不感知错误码。traceId 经气泡 meta 呈现（每轮变化）；
+ * sessionId 为当前会话稳定标识（管理台·历史会话查询键），经 footer 徽标呈现、点击复制（2026-09-18）。
+ * 访问闸口：口令失效（401）时 store 置 gateRequired → 自动跳登录页；<b>常驻登录入口</b>——
+ * 旋钮开启时头部显示「未验证/已验证」状态 chip，点击进 /gate 录口令（2026-09-18 用户裁决：
+ * 发布为简历项目，登录入口前置可见，不再只靠 401 被动跳转）。
  */
 const store = useChatStore()
+const router = useRouter()
 
 const input = ref('')
 const streamMode = ref(true)
@@ -18,6 +26,51 @@ const abortCtrl = ref<AbortController | null>(null)
 
 const busy = computed(() => store.loading || store.streaming)
 const listRef = ref<HTMLElement | null>(null)
+
+// 闸口状态（统一旋钮 agentdemo-gate.json enabled）：开启→头部显示登录入口 chip
+const gateStatus = ref<GateStatus | null>(null)
+const gateEnabled = computed(() => gateStatus.value?.enabled === true)
+const gateVerified = computed(() => hasAccessCode())
+
+onMounted(() => {
+  void fetchGateStatus()
+    .then((s) => {
+      gateStatus.value = s
+    })
+    .catch(() => {
+      /* 状态探测失败=闸口端点不可达，不拦对话（后端闸口 fail-open 同口径） */
+    })
+})
+
+function goGate(): void {
+  if (!gateVerified.value) {
+    void router.push({ path: '/gate', query: { redirect: '/chat' } })
+    return
+  }
+  ElMessage.info('访问口令已录入；如需更换请清除浏览器 localStorage 或联系管理员')
+}
+
+/** 复制当前会话 sessionId（/admin 历史会话查询键）；剪贴板不可用退化为弹出展示，不阻塞。 */
+async function copySessionId(): Promise<void> {
+  if (!store.sessionId) return
+  try {
+    await navigator.clipboard.writeText(store.sessionId)
+    ElMessage.success('会话 ID 已复制（管理台·历史会话查询用）')
+  } catch {
+    ElMessage.info(`会话 ID：${store.sessionId}`)
+  }
+}
+
+// 闸口 401：口令缺失/被 Nacos 轮换失效 → 回登录页（消费后复位，下次触发可再跳）
+watch(
+  () => store.gateRequired,
+  (v) => {
+    if (v) {
+      store.gateRequired = false
+      void router.replace({ path: '/gate', query: { redirect: '/chat' } })
+    }
+  },
+)
 
 const EXAMPLES = [
   '查一下订单 ORD123456 的物流状态',
@@ -83,6 +136,14 @@ watch(
         对话
       </div>
       <div class="chat-view__mode">
+        <button
+          v-if="gateEnabled"
+          class="chat-view__gate"
+          :class="{ 'chat-view__gate--verified': gateVerified }"
+          @click="goGate"
+        >
+          {{ gateVerified ? '● 已验证' : '● 未验证 · 输入口令' }}
+        </button>
         <span class="chat-view__mode-label">同步</span>
         <el-switch v-model="streamMode" size="small" />
         <span class="chat-view__mode-label chat-view__mode-label--active">流式</span>
@@ -118,6 +179,14 @@ watch(
         @keydown="onKeydown"
       />
       <div class="chat-view__actions">
+        <span
+          v-if="store.sessionId"
+          class="mono chat-view__session"
+          title="当前会话 ID（管理台·历史会话查询用），点击复制"
+          @click="copySessionId"
+        >
+          session:{{ store.sessionId }}<span class="chat-view__session-hint">复制</span>
+        </span>
         <span v-if="store.lastTraceId" class="mono chat-view__trace">trace:{{ store.lastTraceId }}</span>
         <el-button v-if="store.streaming" type="warning" plain size="small" @click="stop">停止</el-button>
         <el-button type="primary" size="small" :disabled="busy" :loading="store.loading" @click="send">
@@ -180,6 +249,23 @@ watch(
 }
 .chat-view__mode-label--active {
   color: var(--signal);
+}
+/* 闸口登录入口（统一旋钮开启时显示）：未验证醒目提示、已验证弱化 */
+.chat-view__gate {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--amber-dim, #b45309);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--amber, #f5b941);
+  cursor: pointer;
+}
+.chat-view__gate:hover {
+  filter: brightness(1.2);
+}
+.chat-view__gate--verified {
+  border-color: var(--ink-600);
+  color: var(--ink-300);
 }
 
 .chat-view__empty {
@@ -269,6 +355,34 @@ watch(
   font-size: 10px;
   color: var(--ink-300);
   margin-right: auto;
+}
+/* 会话 ID 徽标：跨轮稳定（管理台历史会话查询键），可点击复制 */
+.chat-view__session {
+  font-size: 10px;
+  color: var(--ink-300);
+  margin-right: auto;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--ink-600);
+  border-radius: 4px;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-view__session:hover {
+  color: var(--ink-100);
+  border-color: var(--ink-500);
+}
+.chat-view__session-hint {
+  font-size: 9px;
+  color: var(--ink-300);
+  border-left: 1px solid var(--ink-500);
+  padding-left: 4px;
+  flex-shrink: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

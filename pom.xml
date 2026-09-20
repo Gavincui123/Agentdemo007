@@ -149,6 +149,45 @@
             <version>1.19.0</version>
         </dependency>
 
+        <!-- 真实 RAG 稀疏通道：Lucene 9.12.x 磁盘倒排 BM25（生产级，替代 JVM 内存语料全量——
+             MMapDirectory 堆内存占用极小，索引落盘由 OS 页缓存承载；BM25Similarity 内置。
+             StandardAnalyzer 对 CJK 逐字切分（UAX29 Ideographic），与 dev HashEmbeddingService
+             tokenize 口径一致。不选 Chroma 原生稀疏索引/Search API：实测单机 Chroma（1.0.8 远端 +
+             1.5.9 本地）服务端硬拦「not enabled in local / not implemented for local executor」，
+             仅分布式/Chroma Cloud 支持（2026-09-17 实测结论，教程 FAQ 有记）。Lucene 10 需 Java 21，
+             项目 Java 17 → 钉 9.12.2。 -->
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-core</artifactId>
+            <version>9.12.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.lucene</groupId>
+            <artifactId>lucene-analysis-common</artifactId>
+            <version>9.12.2</version>
+        </dependency>
+
+        <!-- [[kb-ingest-design]] 知识库多格式文档解析（任务2·录入前置清洗切块）：
+             POI 5.4.1（DOCX 段落/表格 + XLSX 工作表，自带 poi/poi-ooxml-schemas/commons-io 传递依赖）、
+             PDFBox 3.0.5（PDF 文本抽取，含 fontbox）、jsoup 1.18.3（HTML→标题结构化文本）。
+             MD/TXT/CSV/JSON 走 JDK + Jackson3，无需额外依赖。版本均为 2025 稳定 GA，
+             Java 17 兼容；POI 的 log4j-api 仅 API 层，与 Boot Logback 无冲突。 -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.4.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.18.3</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -161,6 +200,22 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!--
+              测试与远程 Nacos 强隔离：application.yml 的 spring.config.import=optional:nacos:... 在
+              @SpringBootTest 上下文同样生效——服务器 dataId 一旦可解析（如 vectorstore.type=chroma、
+              lucene-dir 指向服务器盘），测试上下文就会按生产配置装配并在测试机失败。测试永远只测本地
+              默认值，故把 NACOS_SERVER_ADDR 指到本机拒绝端口（连接即拒、optional: 秒级跳过），
+              而非依赖"远程配置恰好是坏的"。Nacos 相关集成验收用真实环境手工/烟测执行。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <environmentVariables>
+                        <NACOS_SERVER_ADDR>127.0.0.1:1</NACOS_SERVER_ADDR>
+                    </environmentVariables>
+                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -14,11 +14,14 @@ import java.util.List;
  * RAG 种子语料装载器（第四层·dev 起步语料）。
  *
  * <p>启动时把客服知识库样例片段经 {@link VectorStore#index} 嵌入入向量库，使 /chat 即开即用可检索
- * （"文档向量化后正确入向量库"验收）。prod 由真实 KB 索引流程覆盖（随 LangChain4j/PG 接入）。
- * {@code app.rag.seed.enabled=false} 可关闭（如需要空库的集成测试）。
+ * （"文档向量化后正确入向量库"验收）。{@code app.rag.seed.enabled=false} 可关闭（如需要空库的集成测试）；
+ * 真库模式（{@code vectorstore.type=chroma}）恒禁用——种子数字与真语料冲突（如"签收15日"vs 真库 7 天）
+ * 且会污染入库流水线的确定性 id 集合，真库语料唯一真相源是 Python 入库流水线。
+ * 两条 @ConditionalOnProperty 均须满足（AND）。
  */
 @Component
 @ConditionalOnProperty(name = "app.rag.seed.enabled", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "vectorstore", name = "type", havingValue = "inmemory", matchIfMissing = true)
 public class RagSeedRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(RagSeedRunner.class);

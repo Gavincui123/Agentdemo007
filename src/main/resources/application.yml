@@ -119,6 +119,7 @@ logging:
 #       api-key: ${SF_KEY}
 #       large-model: Qwen/Qwen3.5-35B-A3B
 #       small-model: Qwen/Qwen3.5-27B
+#       temperature: 0.2          # 采样温度（默认 0.2 准确优先；可按 provider 覆盖）
 #       disable-thinking-params:  # SiliconFlow 关思考：enable_thinking=false（请求 disableThinking=true 时合并）
 #         enable_thinking: false
 #     - id: aliyun                 # 备（阿里云 DashScope，OpenAI 兼容；不打标签，仅经 fallback 链可达）
@@ -152,7 +153,8 @@ llm:
 # KeywordTriageStep(@Order 150，流水线第一步) 对 rawInput 跑规则匹配：
 #   命中 CHIT_CHAT/REASONING 等且置信达标 → 设 intent（下游改写/重识别跳过，零 LLM）；
 #   命中注入模式 → 立即短路（零 LLM）；无命中/冲突 → 交后续改写+小模型识别。
-# rules 非空 → 替换内置 11 条默认关键词（你拥有完整列表，可经 Nacos 增删）；空/缺省 → 用内置默认。
+# rules 非空 → 与内置 16 条默认关键词合并（同字覆盖、新增追加；退款/退货→CHIT_CHAT 会被高风险词护栏拒绝）；
+# 空/缺省 → 用内置默认。
 # 注入模式 InjectionPatternRule 恒内置、不配置化（安全：注入词表不应被随意增删）。
 # 意图枚举：CHIT_CHAT / REASONING / LONG_CONTEXT / STRUCTURED_EXTRACTION / TRANSFER_TO_HUMAN
 # 在 Nacos dataId 或 application-{profile}.yml 覆盖示例（取消注释即生效）：
@@ -188,6 +190,26 @@ intent:
 embedding:
   enabled: ${EMBEDDING_ENABLED:false}
 
+# ---- 真实向量库（真实 RAG·Chroma v2，vectorstore.type=chroma 时装配）----
+# type=inmemory/缺省 → dev InMemoryVectorStore（内存余弦 + 种子语料，零外部依赖可启动）；
+# type=chroma        → ChromaStoreConfig 装配 ChromaVectorStore + ChromaRagCorpus（BM25 内存语料源）
+#                      + ChromaHybridRetriever（@Primary 接管）。集合/维度/cosine 度量由 Python
+#                      入库流水线（scripts/rag-ingest）定义，Java 只读检索 + 幂等 upsert 不建集合；
+#                      嵌入模型必须与入库一致（Qwen/Qwen3-Embedding-8B，4096 维），换模型=全量重灌。
+# 远程服务器：CHROMA_BASE_URL=http://<host>:8001（v2 API）；自建无鉴权留空 CHROMA_TOKEN。
+vectorstore:
+  type: ${VECTORSTORE_TYPE:inmemory}
+  chroma:
+    base-url: ${CHROMA_BASE_URL:http://localhost:8001}
+    collection: ${CHROMA_COLLECTION:kb_customer_service}
+    api-key: ${CHROMA_TOKEN:}
+    tenant: ${CHROMA_TENANT:default_tenant}
+    database: ${CHROMA_DATABASE:default_database}
+    # 超时预算（2026-09-17 收紧）：稠密通道慢/挂时快速降级 BM25+重排（终闸兜底），
+    # 不许 15s+ 的读挂起拖住整轮（实测 Chroma 抖动轮 ~23s 停顿）。
+    connect-timeout-ms: ${CHROMA_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${CHROMA_READ_TIMEOUT_MS:8000}
+
 # ---- Phase 21 稀疏重排（主备容灾，/v1/rerank；稀疏召回恒本地 BM25 无需 provider）----
 # reranker.enabled=false/缺省 → dev Bm25Reranker（BM25-lite，本地，不调 API）；
 # reranker.enabled=true        → RerankerConfig 按 providers 装配 SiliconFlowReranker + 主备。
@@ -212,8 +234,34 @@ audit:
 agentdemo:
   admin:
     token: ${ADMIN_TOKEN:dev-admin-token}
+  # ---- 访问闸口（2026-09-18 部署闸门·统一旋钮）----
+  # enabled=true（发布口径）一次性生效三件事：① /chat 需访问口令（前端登录页 /gate）；
+  # ② 外部 IP 每自然日对话限额（localhost 直连/本机来源豁免，不经口令不耗额度）；
+  # ③ /eval/** 仅限本机（外部 IP 一律 401）。false=全开放（dev）。
+  # 本地为兜底初始值；热更新源：Nacos dataId agentdemo-gate.json（Listener 推送秒级生效），
+  # 内容 {"enabled":true,"accessCode":"…","dailyLimit":5}，话术字段可选、null 沿用当前值；
+  # 读取失败/未配置 → 用下面的本地值继续（闸口自身 fail-open 保可用，各端点自有鉴权不受影响）。
+  gate:
+    enabled: ${GATE_ENABLED:false}
+    access-code: ${GATE_ACCESS_CODE:}
+    daily-limit: ${GATE_DAILY_LIMIT:5}
+    required-message: ${GATE_REQUIRED_MESSAGE:本站为受限体验，请先输入访问口令}
+    exhausted-message: ${GATE_EXHAUSTED_MESSAGE:今日体验轮次已用完，欢迎明天再来}
+    source: ${GATE_SOURCE:nacos}               # nacos=热更新接入（读不到用上面的本地值）；local=恒本地
+    data-id: ${GATE_DATA_ID:agentdemo-gate.json}
+    group: ${GATE_NACOS_GROUP:DEFAULT_GROUP}
   eval:
     token: ${EVAL_TOKEN:dev-eval-token}
+    # 评测黄金集来源（2026-09-17 Nacos 动态化）：nacos→每次 /eval/run 实时拉取
+    # dataId <data-id-prefix>-<stage>.json（如 agentdemo-eval-intent.json，group 同下），
+    # 内容与本地 resources/eval/<stage>.json 同形——Nacos 控制台改数据不重启即生效；
+    # 读取失败/未配置/内容为空 → 逐 stage 回退本地 classpath（本地兜底，报告 source 字段可见来源）；
+    # local→恒走本地不打 Nacos。连接参数复用 spring.nacos.config.*。
+    source: ${EVAL_SOURCE:nacos}
+    nacos:
+      group: ${EVAL_NACOS_GROUP:DEFAULT_GROUP}
+      data-id-prefix: ${EVAL_NACOS_DATA_ID_PREFIX:agentdemo-eval}
+      timeout-ms: ${EVAL_NACOS_TIMEOUT_MS:3000}
 
 # ---- 模型选择策略（tag|weight|cost，默认 tag，可配置切换） ----
 app:
@@ -222,8 +270,9 @@ app:
   # ---- 提示词源（[[q1-nacos-prompt-mgmt]]）：local/缺省→LocalPromptSource 内存源（dev）；
   #       nacos→PromptSourceConfig 装配 NacosPromptSource（经 AiService 拉取 + md5 gRPC 热推），
   #       复用 spring.nacos.config.* 连接参数。promptKey：system-prompt-segments（分段式系统
-  #       提示词片段清单，bare YAML 数组）、clarify-return/clarify-refund（澄清话术）——Nacos 控制台
-  #       「AI 资源→提示词模板」按 key 建；缺 key/Nacos 不可达→②降级回退硬编码默认，不阻塞 context。----
+  #       提示词片段清单，bare YAML 数组）——Nacos 控制台「AI 资源→提示词模板」按 key 建；
+  #       澄清话术不设模板 key，由大模型按片段指令生成（WorkflowExecutionStep），硬编码仅②降级；
+  #       缺 key/Nacos 不可达→②降级回退硬编码默认，不阻塞 context。----
   prompt:
     source: ${PROMPT_SOURCE:local}
   # ---- 会话缓存：app.redis.enabled=true→真实 Redis（spring.data.redis.* 连接）；false→内存兜底 ----
@@ -231,19 +280,51 @@ app:
     enabled: ${REDIS_ENABLED:false}
   session-cache:
     ttl: ${REDIS_SESSION_TTL:3600s}
-  # ---- Phase 9 工具自纠正：最大迭代次数（耗尽→TOOL_FAILURE 话术短路） ----
+  # ---- Phase 9 工具韧性（2026-09-17 有界 Agent loop·推翻单次前向）----
+  # max-iterations：Agent loop 轮次上限（探测→执行→失败回喂自纠正/澄清；1=退化为单次前向；
+  #   耗尽仍失败 → 错误结果交终答 LLM 如实向客户说明）。timeout-ms：单次工具执行超时（守护线程
+  #   硬中断，0=关闭）。retry.*：瞬态失败（超时/5xx/未知异常）分诊重试——指数退避+全抖动；
+  #   参数非法/幻觉工具名/4xx 明确拒绝不重试（重试同参数无意义，交回喂自纠正），也不记熔断。
   tool:
-    max-iterations: ${TOOL_MAX_ITERATIONS:3}
-  # ---- Phase 10 RAG：Top-K 召回上限、相关性阈值、数量下限、种子语料开关 ----
+    max-iterations: ${TOOL_MAX_ITERATIONS:2}
+    timeout-ms: ${TOOL_TIMEOUT_MS:10000}
+    retry:
+      max-attempts: ${TOOL_RETRY_MAX_ATTEMPTS:3}
+      initial-backoff-ms: ${TOOL_RETRY_INITIAL_BACKOFF_MS:100}
+      multiplier: ${TOOL_RETRY_MULTIPLIER:2.0}
+      max-backoff-ms: ${TOOL_RETRY_MAX_BACKOFF_MS:10000}
+      jitter: ${TOOL_RETRY_JITTER:true}
+  # ---- RAG 检索漏斗（真实 RAG 定案：宽召回→domain 窄化→宽松粗滤→条件重排→置信度终闸→注入）----
+  # 四类旋钮全动态配置，默认值仅为当前 155 块 demo 库口径，生产按库规模调：
+  #   recall-dense / recall-sparse  稠密/稀疏召回预算（生产大库可调 50+；稠密恒开保证语义召回）
+  #   prefilter-min-score           重排前宽松粗滤（0.2 只杀确定垃圾省 rerank 成本，0=关闭；
+  #                                 0.2~0.4 cosine 边际带完整留给 cross-encoder 甄别）
+  #   rerank-top-n                  重排 top_n = 注入上限（池 ≤ top_n 跳过重排——候选不超注入上限时
+  #                                 重排只改顺序不裁剪成员，不值一次 API）
+  #   min-score / rerank-min-score  置信度终闸双判据：被远程重排的看 relevance ≥ rerank-min-score；
+  #                                 未重排的看 cosine ≥ min-score（真库部署建议 RAG_MIN_SCORE=0.4，
+  #                                 dev hash 词袋口径维持 0.3）；BM25-only 无余弦口径候选未经理裁决
+  #                                 不得入上下文——低置信知识绝不进 LLM，幸存不足 min-count → RAG_SKIP
   rag:
-    top-k: ${RAG_TOP_K:5}
+    recall-dense: ${RAG_RECALL_DENSE:24}
+    recall-sparse: ${RAG_RECALL_SPARSE:24}
+    prefilter-min-score: ${RAG_PREFILTER_MIN_SCORE:0.2}
+    rerank-top-n: ${RAG_RERANK_TOP_N:10}
     min-score: ${RAG_MIN_SCORE:0.3}
+    rerank-min-score: ${RAG_RERANK_MIN_SCORE:0.3}
     min-count: ${RAG_MIN_COUNT:1}
+    # 真库模式稀疏通道：Lucene 磁盘倒排 BM25 索引目录（MMap 落盘，堆内存极小；启动时从
+    # Chroma 分页流式同步——常驻内存 O(1) 页，替代已废弃的内存语料全量快照）。生产建议
+    # LUCENE_INDEX_DIR 指向持久盘目录，重启即增量对齐。
+    lucene-dir: ${LUCENE_INDEX_DIR:./data/lucene-bm25}
     seed:
       enabled: ${RAG_SEED_ENABLED:true}
-  # ---- Phase 11 HITL：超时阈值（毫秒，超时未确认→HITL_TIMEOUT 话术 + 工单） ----
+  # ---- Phase 11 HITL：超时阈值（毫秒，超时未确认→HITL_TIMEOUT 话术 + 工单）----
+  # L2 挂起-恢复：checkpoint Redis 热副本 TTL（app.redis.enabled=true 时生效；DB 恒为持久真相源，
+  # Redis/DB 写入均异步不阻塞主线；hitl_ticket / biz_order 建表见 docs/sql/hitl_l2_init.sql）。
   hitl:
     timeout-ms: ${HITL_TIMEOUT_MS:300000}
+    checkpoint-redis-ttl: ${HITL_CHECKPOINT_REDIS_TTL:24h}
   # ---- Phase 12 结构化输出：Schema 校验失败最大重试次数（耗尽→OUTPUT_FALLBACK 话术兜底） ----
   output:
     max-retries: ${OUTPUT_MAX_RETRIES:2}
@@ -258,10 +339,30 @@ app:
   # ---- Phase 14 LangGraph 死循环护栏：单请求最大迭代次数（§5.13 兜底，图模式生效）----
   langgraph:
     max-iterations: ${LANGGRAPH_MAX_ITERATIONS:25}
-  # ---- [[business-tools-workflow-dag]] 高风险固定工作流：enabled=true→装配 6 节点 AfterSaleWorkflowGraph
+  # ---- [[business-tools-workflow-dag]] 高风险固定工作流：enabled=true→装配 5 节点 AfterSaleWorkflowGraph
   #       + WorkflowExecutionStep@670（entity-gate 澄清 + 终态收口 + 状态机续跑/切换/放弃）；
   #       缺省 false→不装配，@670 槽空，旧链线性等价（RagStep→ContextBuilder 不变）。
   #       dev 跑真售后 2 轮流：WORKFLOW_ENABLED=true（+ LLM_ENABLED=true + SF_KEY 真路由）；
   #       mock 数据对齐演示用户 10086/gold（ORD-001/002 归 10086、ORD-003 归 10010）。
   workflow:
     enabled: ${WORKFLOW_ENABLED:false}
+    # 提交制审批（2026-09-20 原则：审批是事件、Agent 最小权限）——建 PENDING 人工工单后立即返回，
+    # 无请求内等待窗口（原 approval-wait-seconds/桥唤醒已退役，超时不可能影响决议）；
+    # 批准/驳回=管理台状态事件（批准触发业务系统执行 mock），客户经工单查询工具读进度。
+  # ---- [[refusal-design]] 拒答机制（无可靠依据时明确告知无法回答，业务级正确行为≠系统降级）----
+  # mode 三档：off=不启用；prompt=软约束（RAG grounding 未命中→System Runtime 块注入"严禁自身知识
+  # 补答"强指令，工具无数据走「工具无数据」块框定，默认值，兼容既有评测黄金集行为）；
+  # strict=硬闸门（grounding 未命中且 ragFragments/runtimeFacts/toolResults 全空→RefusalGateStep@690
+  # 零 LLM 短路 presetReply 拒答话术）。生产建议 REFUSAL_MODE=strict。
+  refusal:
+    mode: ${REFUSAL_MODE:prompt}
+    phrase: ${REFUSAL_PHRASE:很抱歉，知识库中暂未找到可支撑回答的资料，为避免给您错误信息，这个问题我无法作答。建议补充订单号等更多信息、换种问法，或转人工客服处理。}
+  # ---- [[kb-ingest-design]] 知识库录入（多格式解析→清洗→切块→嵌入入库，/admin/kb/** 管理）----
+  # chunk.max-chars/overlap：通用递归切块上限/重叠（专业领域条款切块自动识别"第X条/1.2/（一）"
+  # 编号模式，条款原子不硬切）；preview-limit：试运行返回的切块预览条数上限；
+  # max-file-size 走 spring.servlet.multipart（下方）。
+  kb:
+    chunk:
+      max-chars: ${KB_CHUNK_MAX_CHARS:500}
+      overlap: ${KB_CHUNK_OVERLAP:80}
+    preview-limit: ${KB_PREVIEW_LIMIT:50}
