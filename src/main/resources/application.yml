@@ -7,13 +7,17 @@ spring:
   application:
     name: Agentdemo007
   profiles:
-    active: dev
+    # 本地默认 dev；容器经 compose 环境变量 SPRING_PROFILES_ACTIVE=prod 切换——
+    # 不要写死：写死 prod 会让本机 mvn test 全部以 prod 起上下文（/var/log 不可写 → logback 崩 → 打包失败）
+    active: ${SPRING_PROFILES_ACTIVE:dev}
   # Nacos 配置中心（官方 spring-alibaba-nacos-config）：spring.config.import 接入 dataId。
   # dataId 须带 .yaml 扩展名，组件按扩展名选 YAML 解析器；namespace 留空=public（填 ID 非显示名）。
   # 6 个连接参数只能放本地/env（鸡生蛋），其余配置放 Nacos dataId。
   # optional: 前缀使 Nacos 不可达时优雅跳过（降级本地、不阻塞启动）；启动日志可见「Load config success / 跳过」以确认是否加载。
   config:
-    import: "optional:nacos:Agentdemo007.yaml?group=DEFAULT_GROUP"
+    # dataId 名可经环境变量 NACOS_DATA_ID 切换（如 Agentdemo007-prod.yaml）；缺省读 Agentdemo007.yaml。
+    # 本地开发/测试不设该变量 → 读 Agentdemo007.yaml（拉不到则 optional: 静默跳过，不影响测试）。
+    import: "optional:nacos:${NACOS_DATA_ID:Agentdemo007.yaml}?group=DEFAULT_GROUP"
   nacos:
     config:
       server-addr: ${NACOS_SERVER_ADDR:120.48.5.195:8848}

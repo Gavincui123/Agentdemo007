@@ -44,7 +44,7 @@ async function submit(): Promise<void> {
     <div class="gate__card surface">
       <div class="gate__head">
         <span class="gate__badge mono">访问验证</span>
-        <h2 class="gate__title">小哲电商客服体验站</h2>
+        <h2 class="gate__title">电商客服体验站</h2>
       </div>
       <p class="gate__sub">本站为受限体验，请输入访问口令后开始对话。每日体验轮次有限，用完次日自动恢复。</p>
 

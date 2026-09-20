@@ -229,6 +229,7 @@ docker-compose.yml# 中间件本地编排（MySQL / pgvector 等）
 | [docs/DEVELOPMENT-PLAN.md](docs/DEVELOPMENT-PLAN.md) | 20 个 Phase 的工程化开发计划与实现注记（每处与原设计偏差的诚实记录） |
 | [docs/框架文件.md](docs/框架文件.md) | 七层架构总图 |
 | [DEPLOY.md](DEPLOY.md) | 部署手册：环境变量大全、Nacos dataId 示例、闸口发布清单 |
+| [docs/部署实录.md](docs/部署实录.md) | 首次上线的踩坑手册：profile/dataId/容器网络/MySQL 授权/nginx 接入等 15+ 个真实问题的现象→根因→修复，含更新回滚流程与安全清单 |
 | [博客一：全链路延迟与稳定性调优](docs/blog/2026-09-16-agent-latency-stability-tuning.zh.md)（[EN](docs/blog/2026-09-16-agent-latency-stability-tuning.en.md)） | 80.5s → 6.1s 实录：超时预算治理、SSE 生命周期、意图漂移修复 |
 | [博客二：决策层/持久化/闸门硬化](docs/blog/2026-09-18-decision-arbiter-hitl-l2-access-gate.zh.md) | 会话仲裁器、HITL L2 持久化、统一访问闸口 |
 | [docs/rag-corpus-ingestion-tutorial.md](docs/rag-corpus-ingestion-tutorial.md) | 多格式语料「清洗-切分-入库」教程（10 类文档分型/幂等/嵌入缓存/坑） |

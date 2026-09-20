@@ -29,10 +29,13 @@ spring:
     hibernate:
       ddl-auto: none
     show-sql: false
-  # prod ddl-auto=none，由 classpath:schema.sql 建表（IF NOT EXISTS 幂等，每次启动安全执行）
+  # prod ddl-auto=none，由 schema.sql 建表（IF NOT EXISTS 幂等，每次启动安全执行）
   sql:
     init:
       mode: always
+      # schema.sql 位于 classpath:/sql/ 子目录，Spring 默认只加载 classpath 根的 schema.sql——
+      # 不显式指定 location 时 prod（ddl-auto=none）将不建任何表，运行期所有 SQL 报错
+      schema-locations: classpath:sql/schema.sql
   # 生产启用 RabbitMQ（RABBITMQ_ENABLED=true）：消费者 + 真实 publisher + DLQ 装配
   rabbitmq:
     listener:

@@ -67,7 +67,7 @@ public class LlmSummaryHook implements SummaryHook {
                 : priorHistory.stream()
                         .map(m -> "[" + label(m) + "] " + m.content())
                         .collect(Collectors.joining("\n"));
-        return "你是小哲电商客服系统的会话摘要助手。请用一句话概括以下会话的主题，"
+        return "你是电商客服系统的会话摘要助手。请用一句话概括以下会话的主题，"
                 + "作为后续上下文锚点（仅输出摘要，不要附加说明）：\n"
                 + transcript + "\n本轮用户输入：" + currentInput;
     }

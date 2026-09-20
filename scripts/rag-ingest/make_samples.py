@@ -81,7 +81,7 @@ def make_pdf(out: Path) -> None:
 
     # 第 1 页：文本页。页眉页脚在每一页重复出现（演示 strip_pdf_headers_footers 去重）
     page = doc.new_page(width=595, height=842)  # A4
-    page.insert_text(fitz.Point(60, 50), "小哲电商内部文件（页眉：重复行演示）",
+    page.insert_text(fitz.Point(60, 50), "电商内部文件（页眉：重复行演示）",
                      fontname="china-s", fontsize=9)
     page.insert_text(fitz.Point(60, 90), "大促活动公告", fontname="china-s", fontsize=18)
     body_lines = [
@@ -117,7 +117,7 @@ def make_pdf(out: Path) -> None:
 
     # 第 2 页：扫描图像页（整页只有一张图，无文本 → 触发扫描页判定）
     scan_page = doc.new_page(width=595, height=842)
-    scan_page.insert_text(fitz.Point(60, 50), "小哲电商内部文件（页眉：重复行演示）",
+    scan_page.insert_text(fitz.Point(60, 50), "电商内部文件（页眉：重复行演示）",
                           fontname="china-s", fontsize=9)
     scan_png = _render_scan_image()
     if scan_png:
