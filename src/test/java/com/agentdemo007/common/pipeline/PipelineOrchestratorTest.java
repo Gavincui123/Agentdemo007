@@ -249,7 +249,7 @@ class PipelineOrchestratorTest {
         Retriever retriever = mock(Retriever.class); // 不该被调（chit-chat 跳 RAG）
         RagStep ragStep = new RagStep(retriever,
                 new RetrievalValidator(0.3, 1), new Bm25Reranker(),
-                new RagInjectionScanner(), 5);
+                new RagInjectionScanner(), 5, 10, 0.2);
         PipelineOrchestrator orchestrator = new PipelineOrchestrator(
                 List.of(triage, ragStep, replyStep("您好")), phraseCenter);
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { splitSseStream, extractSseData, nextBackoff, streamChat } from './sse'
+import { splitSseStream, extractSseData, extractSseEventName, nextBackoff, streamChat } from './sse'
 
 describe('splitSseStream', () => {
   it('returns one complete event and empty remainder', () => {
@@ -157,4 +157,108 @@ describe('streamChat', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
     vi.unstubAllGlobals()
   })
+})
+
+describe('extractSseEventName', () => {
+  it('extracts the event field name', () => {
+    expect(extractSseEventName('event:step_started\ndata:{"step":"RagStep"}')).toBe('step_started')
+  })
+
+  it('returns null when no event line present (default message per SSE spec)', () => {
+    expect(extractSseEventName('data:payload')).toBeNull()
+  })
+
+  it('strips one leading space after the colon', () => {
+    expect(extractSseEventName('event: reply_ready\ndata:{}')).toBe('reply_ready')
+  })
+
+  it('ignores comment lines and data lines', () => {
+    expect(extractSseEventName(':ping\ndata:x')).toBeNull()
+  })
+})
+
+describe('streamChat onEvent (P0 可观测：命名事件通道)', () => {
+  const url = '/chat/stream'
+
+  it('delivers named events with their SSE name to onEvent', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        mockSseResponse([
+          'event:step_started\ndata:{"step":"RagStep"}\n\n',
+          'event:reply_chunk\ndata:{"text":"你"}\n\n',
+        ]),
+      ),
+    )
+    const onEvent = vi.fn()
+    await streamChat(url, {}, { onEvent })
+    expect(onEvent).toHaveBeenNthCalledWith(1, 'step_started', '{"step":"RagStep"}')
+    expect(onEvent).toHaveBeenNthCalledWith(2, 'reply_chunk', '{"text":"你"}')
+    vi.unstubAllGlobals()
+  })
+
+  it('defaults unnamed events to "message"', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => mockSseResponse(['data:bare\n\n'])))
+    const onEvent = vi.fn()
+    await streamChat(url, {}, { onEvent })
+    expect(onEvent).toHaveBeenCalledWith('message', 'bare')
+    vi.unstubAllGlobals()
+  })
+
+  it('onEvent takes priority: onMessage is not called when both provided', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => mockSseResponse(['event:e\ndata:x\n\n'])))
+    const onEvent = vi.fn()
+    const onMessage = vi.fn()
+    await streamChat(url, {}, { onEvent, onMessage })
+    expect(onEvent).toHaveBeenCalledTimes(1)
+    expect(onMessage).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('falls back to onMessage when onEvent absent (legacy channel intact)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => mockSseResponse(['event:e\ndata:x\n\n'])))
+    const onMessage = vi.fn()
+    await streamChat(url, {}, { onMessage })
+    expect(onMessage).toHaveBeenCalledWith('x')
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('streamChat 前置拒绝（P0 闸口：JSON 拒绝体识别）', () => {
+  const url = '/chat/stream'
+
+  function mockJsonResponse(body: Record<string, unknown>): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  it('json content-type → SseRejectionError（话术+code），不重试不进 SSE 解析', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        mockJsonResponse({ code: 429, message: '今日体验轮次已用完，欢迎明天再来' }),
+      ),
+    )
+    const onError = vi.fn()
+    const onOpen = vi.fn()
+    const onEvent = vi.fn()
+    const onClose = vi.fn()
+    await streamChat(url, {}, { onEvent, onOpen, onError, onClose })
+    expect(fetchMockCalls()).toBe(1) // 不可重试：只请求一次
+    expect(onOpen).not.toHaveBeenCalled() // 未进 SSE 流
+    expect(onEvent).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledTimes(1)
+    const err = onError.mock.calls[0]?.[0] as { code: number; message: string }
+    expect(onError.mock.calls[0]?.[1]).toBe(false) // willRetry=false
+    expect(err.code).toBe(429)
+    expect(err.message).toBe('今日体验轮次已用完，欢迎明天再来')
+    expect(onClose).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  function fetchMockCalls(): number {
+    return (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length
+  }
 })

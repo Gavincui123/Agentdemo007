@@ -40,10 +40,11 @@ public class VectorStoreConfig {
      *
      * <p>返回具体类型 {@link InMemoryVectorStore} 以便作为 {@link KeywordIndex} bean 被
      * {@code @ConditionalOnMissingBean(KeywordIndex.class)} 正确识别 + 注入 {@link HybridRetriever}。
-     * prod 覆盖为 pgvector（不实现 KeywordIndex → 触发 NO_OP 关键词通道）。
+     * 与真库 {@code ChromaStoreConfig}（{@code vectorstore.type=chroma} 装配 {@code ChromaVectorStore}
+     * + {@code ChromaRagCorpus}）属性门控互斥（非 bean 存在性）——装配顺序无关、可调试。
      */
     @Bean
-    @ConditionalOnMissingBean(VectorStore.class)
+    @ConditionalOnProperty(prefix = "vectorstore", name = "type", havingValue = "inmemory", matchIfMissing = true)
     InMemoryVectorStore vectorStore(EmbeddingService embedding) {
         return new InMemoryVectorStore(embedding);
     }
@@ -64,10 +65,13 @@ public class VectorStoreConfig {
     }
 
     /**
-     * Phase 21 稀疏检索器：BM25 全语料打分召回（经 {@link RagCorpus} 取语料，引擎无关）。
+     * Phase 21 稀疏检索器（dev）：BM25 全语料打分召回（经 {@link RagCorpus} 取语料，引擎无关）。
      * 恒用 BM25 评分（与重排 bean 无关——稀疏召回的定义即 BM25；prod 重排可换 SiliconFlow）。
+     * 真库模式（{@code vectorstore.type=chroma}）本 bean 退让——稀疏通道由 {@code ChromaStoreConfig}
+     * 装配 {@code LuceneBm25Retriever}（磁盘倒排，不占堆内存）。
      */
     @Bean
+    @ConditionalOnProperty(prefix = "vectorstore", name = "type", havingValue = "inmemory", matchIfMissing = true)
     Bm25Retriever bm25Retriever(RagCorpus corpus) {
         return new Bm25Retriever(corpus, new Bm25Reranker());
     }
@@ -76,18 +80,26 @@ public class VectorStoreConfig {
      * Phase 21 主检索器：Hybrid（稠密 {@link VectorRetriever} + 稀疏 {@link Bm25Retriever} 融合，
      * {@code @Primary}）。稠密通道异常→降级稀疏-only 继续（混合检索韧性）。{@code RagStep} 经
      * {@link Retriever} seam 注入本 bean。纯向量 {@link VectorRetriever} 仍为 bean（单测直接构造），不为主。
+     * 真库模式（{@code vectorstore.type=chroma}）本 bean 退让，由 {@code ChromaStoreConfig} 装配
+     * {@code ChromaHybridRetriever} 接管 @Primary（属性门控互斥）。
      */
     @Bean
     @Primary
+    @ConditionalOnProperty(prefix = "vectorstore", name = "type", havingValue = "inmemory", matchIfMissing = true)
     Retriever hybridRetriever(VectorRetriever denseChannel, Bm25Retriever sparseChannel) {
         return new HybridRetriever(denseChannel, sparseChannel);
     }
 
+    /**
+     * 检索置信度终闸（双判据：被重排的看 relevance，未重排的看 cosine）。
+     * min-score 语义按向量空间口径调：dev hash 0.3 缺省；真库部署建议 RAG_MIN_SCORE=0.4（真嵌入）。
+     */
     @Bean
     RetrievalValidator retrievalValidator(
             @Value("${app.rag.min-score:0.3}") double minScore,
-            @Value("${app.rag.min-count:1}") int minCount) {
-        return new RetrievalValidator(minScore, minCount);
+            @Value("${app.rag.min-count:1}") int minCount,
+            @Value("${app.rag.rerank-min-score:0.3}") double rerankMinScore) {
+        return new RetrievalValidator(minScore, minCount, rerankMinScore);
     }
 
     /**

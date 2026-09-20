@@ -5,7 +5,6 @@ import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.agent.tool.ToolSpecifications;
 import dev.langchain4j.service.tool.DefaultToolExecutor;
-import dev.langchain4j.service.tool.ToolExecutor;
 import org.springframework.util.ClassUtils;
 
 import java.lang.reflect.Method;
@@ -77,14 +76,41 @@ public class ToolSchemaProvider {
     }
 
     /**
-     * 全局工具执行器映射（name → {@link ResilientToolExecutor} 包 {@link DefaultToolExecutor}）。
+     * 全局工具执行器映射（name → {@link ResilientToolExecutor} 包 {@code DefaultToolExecutor}），
+     * 兼容口径：无重试/无超时（既有测试/最小装配）。
      * 与 {@link #allSchemas} 同源（同批 binding），键一致。breaker 注入后 per-tool 熔断记账。
      */
-    public Map<String, ToolExecutor> executors(ToolCircuitBreaker breaker) {
-        Map<String, ToolExecutor> r = new LinkedHashMap<>();
+    public Map<String, ResilientToolExecutor> executors(ToolCircuitBreaker breaker) {
+        return executors(breaker, com.agentdemo007.resilience.RetryPolicy.noRetry(), 0L);
+    }
+
+    /**
+     * 全局工具执行器映射（生产口径）：per-tool 熔断 + 分诊重试（指数退避+全抖动）+ per-call 超时。
+     * 与 {@link #allSchemas} 同源（同批 binding），键一致。
+     */
+    public Map<String, ResilientToolExecutor> executors(ToolCircuitBreaker breaker,
+                                                        com.agentdemo007.resilience.RetryPolicy retryPolicy,
+                                                        long timeoutMs) {
+        Map<String, ResilientToolExecutor> r = new LinkedHashMap<>();
         bindingsByName.forEach((name, b) ->
-                r.put(name, new ResilientToolExecutor(new DefaultToolExecutor(b.bean, b.method), breaker)));
+                r.put(name, new ResilientToolExecutor(propagatingExecutor(b), breaker, retryPolicy, timeoutMs)));
         return r;
+    }
+
+    /**
+     * 构造 LC4j 执行原语（propagate/wrap 双开）：@Tool 方法异常以 {@code ToolExecutionException}
+     * 抛出（交 {@link ToolExceptionTriage} 解包分诊重试/分类），参数异常以 {@code ToolArgumentsException}
+     * 抛出（不重试、反馈 LLM 自纠正）。默认构造会把两类异常都吞成错误字符串结果——熔断记账与重试
+     * 分类全部失明（2026-09-17 字节码取证），必须显式开启。
+     */
+    private static DefaultToolExecutor propagatingExecutor(ToolBinding b) {
+        return new DefaultToolExecutor.Builder()
+                .object(b.bean())
+                .originalMethod(b.method())
+                .methodToInvoke(b.method())
+                .wrapToolArgumentsExceptions(Boolean.TRUE)
+                .propagateToolExecutionExceptions(Boolean.TRUE)
+                .build();
     }
 
     /**

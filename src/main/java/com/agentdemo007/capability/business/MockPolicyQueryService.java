@@ -1,16 +1,20 @@
 package com.agentdemo007.capability.business;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
  * 政策查询 mock 实现（单入口 seam 的 mock 桩·[[business-tools-workflow-dag]] §2.1 决策 R 前期）。
  *
  * <p>按 {@link PolicyDomain} 返 canned 政策文本 + citation（"退货/退款/活动政策知识库§x"）。
- * 后期由 {@code RagPolicyQueryService}（委托 {@code HybridRetriever}）替换——换 impl 不换 seam/调用方。
+ * 真库模式由 {@code RagPolicyQueryService}（委托 {@code Retriever} 真实 RAG 漏斗）替换——
+ * 换 impl 不换 seam/调用方；两者以 {@code vectorstore.type} 属性门控互斥（inmemory 默认 mock）。
  *
- * <p>收口：null domain 幂等返兜底 fragment 不抛（不阻塞主链路，§5.12 每步降级）。
+ * <p>收口：null domain / query 幂等返兜底 fragment 不抛（不阻塞主链路，§5.12 每步降级）；
+ * {@code query} 检索词在 mock 语义下无消费方（canned 域级文本），签名随 seam 扩展保留。
  */
 @Component
+@ConditionalOnProperty(prefix = "vectorstore", name = "type", havingValue = "inmemory", matchIfMissing = true)
 public class MockPolicyQueryService implements PolicyQueryService {
 
     private static final PolicyFragment RETURN_POLICY = new PolicyFragment(
@@ -22,12 +26,17 @@ public class MockPolicyQueryService implements PolicyQueryService {
     private static final PolicyFragment PROMOTION_POLICY = new PolicyFragment(
             "会员活动：gold级会员享会员价与满减叠加，活动商品不参与无理由退货。",
             "活动政策知识库§1");
+    /**
+     * 兜底 fragment（[[refusal-design]]）：hit=false 标记"政策库无此条目"——经 @Tool JSON 透传后，
+     * {@code ToolExecutionStep} 据此路由进 {@code toolDataMisses}（工具无数据通道），
+     * 不再混入 ragFragments 冒充政策正文由 LLM 自由转述。
+     */
     private static final PolicyFragment FALLBACK = new PolicyFragment(
             "暂无相关政策信息，建议联系人工客服确认。",
-            "兜底政策");
+            "兜底政策", false);
 
     @Override
-    public PolicyFragment query(PolicyDomain domain) {
+    public PolicyFragment query(PolicyDomain domain, String query) {
         if (domain == null) {
             return FALLBACK;
         }

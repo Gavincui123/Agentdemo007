@@ -11,6 +11,7 @@ public enum ErrorCode {
     UNAUTHORIZED(401, "未授权"),
     FORBIDDEN(403, "禁止访问"),
     NOT_FOUND(404, "资源不存在"),
+    CONFLICT(409, "请求冲突"),
     RATE_LIMITED(429, "请求过于频繁"),
     SESSION_CACHE_ERROR(5030, "会话缓存异常"),
     INTERNAL_ERROR(5000, "系统内部错误");

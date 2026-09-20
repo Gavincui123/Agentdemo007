@@ -8,84 +8,133 @@ import com.agentdemo007.capability.business.UserQueryService;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import org.junit.jupiter.api.Test;
 
-import java.time.Clock;
-import java.time.Instant;
-import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link AfterSaleWorkflowGraph} 5+ 节点真 DAG 单测（Slice 3·[[business-tools-workflow-dag]] §2.3·
- * "将 DAG 确实落到 Workflow"）。
+ * {@link AfterSaleWorkflowGraph} 真 DAG 单测（[[business-tools-workflow-dag]] §2.3·2026-09-20 提交制收缩）。
  *
- * <p>固定 6 节点 DAG（替 2 节点 {@link RefundWorkflowGraph}）：
- * {@code query_user → query_order → query_policy → validate →(条件边)
- * pass: submit_approval → approval_gate → END；fail: → END(Rejected(reason,message))}。
+ * <p>固定 5 节点 DAG：{@code query_user → query_order → query_policy → validate →(条件边)
+ * pass: submit_ticket（建人工工单即返回）→ END(Pending)；fail: → END(Rejected(reason,message))}。
+ * <b>原则（用户裁决）：审批是事件、Agent 最小权限</b>——图内无审批等待：validate pass 后建 PENDING
+ * 人工工单立即返回 {@link AfterSaleWorkflowOutcome.Pending}；批准/驳回是管理台的工单状态事件，
+ * 由 {@code AdminHitlController} 决议（批准触发 {@code AfterSaleBusinessExecutor} 业务执行 mock）；
+ * 客户后续经工单查询工具读进度。
  *
- * <p>验 4 校验分支（用户钦定"校验失败按情况告知客户"）：
- * <ul>
- *   <li>本人+7 天内+订单存在（ORD-001）→ pass → submit+approval → Approved；</li>
- *   <li>非本人（ORD-003, 10010≠当前 10086）→ Rejected(ORDER_NOT_OWNED)，校验失败不提交；</li>
- *   <li>超 7 天（ORD-002, 11 天前）→ Rejected(BEYOND_7_DAY)；</li>
- *   <li>订单不存在（ORD-999）→ Rejected(ORDER_NOT_FOUND)；</li>
- *   <li>approval Timeout → Timeout 终态（submit 已跑）；</li>
- *   <li>approval Denied → submit Retry（maxIterations 护栏）。</li>
- * </ul>
- * seams 用 lambda（submit 返 id、approval 按内容决议）；时钟固定 2026-09-12 钉 7 天窗口判定（[[code-review-hardening-pass]]
- * 同款 LongSupplier/固定 Clock 确定性）。真退款/退货后端 + 真人工审批 = Slice 4 延后。
+ * <p>验分支：本人+订单存在（ORD-001）→ pass → 建单 → Pending；非本人（ORD-003, 10010≠10086）→
+ * Rejected(ORDER_NOT_OWNED) 且不建单；订单不存在（ORD-999）→ Rejected(ORDER_NOT_FOUND)；
+ * Agent 裁决 INELIGIBLE → Rejected(POLICY_INELIGIBLE)（话术=Agent 产出，不建单）；
+ * UNCERTAIN → fail-safe 到人工建单；alreadyApproved 提交结果 → Pending(true)。
+ * seams 用 lambda（submitter 计数返固定结果、judge 三态桩）；时钟对裁决无影响（裁决器自持 Clock）。
  */
 class AfterSaleWorkflowGraphTest {
-
-    /** 固定时钟 2026-09-12（钉 7 天窗口：ORD-001 3 天前=窗口内、ORD-002 11 天前=超窗）。 */
-    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-09-12T00:00:00Z"), ZoneOffset.UTC);
 
     private final UserQueryService userService = new UserQueryService();
     private final OrderQueryService orderService = new OrderQueryService();
     private final PolicyQueryService policyService = new MockPolicyQueryService();
 
-    /** 退货图（PolicyDomain.RETURN + ReturnValidationRule，当前账户 10086）。 */
-    private AfterSaleWorkflowGraph returnGraph(WorkflowApprovalDecision approval, AfterSaleSubmitService submit) {
+    /** 计数提交器：记 submit 次数 + 返回提交结果（TK-TEST-{n}，可指定 alreadyApproved）。 */
+    private static final class SubmitCanary implements WorkflowApprovalSubmitter {
+        final AtomicInteger count = new AtomicInteger();
+        final boolean alreadyApproved;
+
+        SubmitCanary(boolean alreadyApproved) { this.alreadyApproved = alreadyApproved; }
+
+        @Override
+        public Outcome submit(ApprovalRequest request) {
+            return new Outcome("TK-TEST-" + count.incrementAndGet(), alreadyApproved);
+        }
+    }
+
+    private static AfterSaleEligibilityJudge judgeEligible() {
+        return input -> new AfterSaleEligibilityJudge.Verdict(
+                AfterSaleEligibilityJudge.Decision.ELIGIBLE, "7 天无理由退货期内", null);
+    }
+
+    private static AfterSaleEligibilityJudge judgeIneligible(String message) {
+        return input -> new AfterSaleEligibilityJudge.Verdict(
+                AfterSaleEligibilityJudge.Decision.INELIGIBLE, "超无理由期限", message);
+    }
+
+    private static AfterSaleEligibilityJudge judgeUncertain() {
+        return input -> AfterSaleEligibilityJudge.Verdict.uncertain("政策未覆盖");
+    }
+
+    /** 退货图（PolicyDomain.RETURN，当前账户 10086，提交器可注入）。 */
+    private AfterSaleWorkflowGraph returnGraph(WorkflowApprovalSubmitter submitter,
+                                               AfterSaleEligibilityJudge judge) {
         return new AfterSaleWorkflowGraph(userService, orderService, policyService,
-                PolicyDomain.RETURN, new ReturnValidationRule(CLOCK),
-                submit, approval, "10086");
+                PolicyDomain.RETURN, judge, submitter, "10086");
     }
 
-    private static WorkflowApprovalDecision autoApprove() {
-        return wr -> new WorkflowApprovalDecision.Approved("auto");
-    }
-
-    private static AfterSaleSubmitService submitReturning(String id) {
-        return ctx -> id;
-    }
-
-    // ---- pass 路径 ----
+    // ---- pass 路径：建单即返回（提交制） ----
 
     @Test
-    void pass_ownedWithinWindow_submitsAndApproves() {
-        AtomicInteger submitCount = new AtomicInteger();
-        AfterSaleSubmitService submit = ctx -> {
-            submitCount.incrementAndGet();
-            return "WF-RET-001";
-        };
-        AfterSaleWorkflowGraph graph = returnGraph(autoApprove(), submit);
+    void pass_ownedOrder_submitsTicket_returnsPending() {
+        SubmitCanary submitter = new SubmitCanary(false);
+        AfterSaleWorkflowGraph graph = returnGraph(submitter, judgeEligible());
 
         AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-001"));
 
-        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Approved.class);
-        assertThat(submitCount.get()).isEqualTo(1); // submit 跑一次
+        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Pending.class);
+        assertThat(((AfterSaleWorkflowOutcome.Pending) outcome).alreadyApproved()).isFalse();
+        assertThat(submitter.count.get()).isEqualTo(1); // 建单恰一次
     }
 
-    // ---- fail 路径：校验失败 → Rejected(reason, message)，不提交 ----
+    @Test
+    void pass_lowercaseOrderId_normalizedToUpper() {
+        // 2026-09-17 定案回归钉：用户手打小写 "ord-001" —— (?i) 匹配但 group() 原样返回小写，
+        // 精确键查找 miss → 误判「未查询到订单」。提取点统一归一化大写。
+        SubmitCanary submitter = new SubmitCanary(false);
+        AfterSaleWorkflowGraph graph = returnGraph(submitter, judgeEligible());
+
+        AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ord-001"));
+
+        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Pending.class);
+        assertThat(submitter.count.get()).isEqualTo(1);
+    }
+
+    @Test
+    void submitTicket_carriesFullContext_adminOneScreenReview() {
+        // 提交制：工单上下文全量富集（动作/订单/订单实时事实摘要/Agent 资格判定），管理员一屏可审
+        List<WorkflowApprovalSubmitter.ApprovalRequest> seen = new ArrayList<>();
+        AfterSaleWorkflowGraph graph = returnGraph(req -> {
+            seen.add(req);
+            return new WorkflowApprovalSubmitter.Outcome("TK-1", false);
+        }, judgeEligible());
+
+        graph.invoke(new PipelineContext("s1", "退货 ORD-001"));
+
+        assertThat(seen).hasSize(1);
+        WorkflowApprovalSubmitter.ApprovalRequest req = seen.get(0);
+        assertThat(req.action()).isEqualTo("RETURN");
+        assertThat(req.orderId()).isEqualTo("ORD-001");
+        assertThat(req.orderSummary()).contains("10086").contains("已签收").contains("299.00"); // 实时事实摘要
+        assertThat(req.eligibilityNote()).contains("ELIGIBLE"); // Agent 裁决进工单
+        assertThat(req.sessionId()).isEqualTo("s1");
+        assertThat(req.userQuery()).isEqualTo("退货 ORD-001");
+    }
+
+    @Test
+    void pass_alreadyApprovedOutcome_mapsToPendingTrue() {
+        // 提交制幂等：同键工单此前已批准（submitter 返 alreadyApproved=true）→ Pending(true)
+        AfterSaleWorkflowGraph graph = returnGraph(new SubmitCanary(true), judgeEligible());
+
+        AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-001"));
+
+        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Pending.class);
+        assertThat(((AfterSaleWorkflowOutcome.Pending) outcome).alreadyApproved()).isTrue();
+    }
+
+    // ---- fail 路径：机械事实校验（先于 Agent，短路即驳、不建单） ----
 
     @Test
     void fail_orderNotOwned_rejectedWithoutSubmit() {
-        AtomicInteger submitCount = new AtomicInteger();
-        AfterSaleSubmitService submit = ctx -> {
-            submitCount.incrementAndGet();
-            return "WF-RET-003";
-        };
-        AfterSaleWorkflowGraph graph = returnGraph(autoApprove(), submit);
+        SubmitCanary submitter = new SubmitCanary(false);
+        AfterSaleWorkflowGraph graph = returnGraph(submitter, judgeEligible());
 
         AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-003"));
 
@@ -93,29 +142,50 @@ class AfterSaleWorkflowGraphTest {
         AfterSaleWorkflowOutcome.Rejected r = (AfterSaleWorkflowOutcome.Rejected) outcome;
         assertThat(r.reason()).isEqualTo(Reason.ORDER_NOT_OWNED);
         assertThat(r.customerMessage()).contains("不属于");
-        assertThat(submitCount.get()).isZero(); // 校验失败不提交（不进入 submit_approval）
-    }
-
-    @Test
-    void fail_beyond7Day_rejected() {
-        AfterSaleWorkflowGraph graph = returnGraph(autoApprove(), submitReturning("WF-RET-002"));
-
-        AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-002"));
-
-        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Rejected.class);
-        assertThat(((AfterSaleWorkflowOutcome.Rejected) outcome).reason()).isEqualTo(Reason.BEYOND_7_DAY);
-        assertThat(((AfterSaleWorkflowOutcome.Rejected) outcome).customerMessage()).contains("7天");
+        assertThat(submitter.count.get()).isZero(); // 校验失败不建单（不进入 submit_ticket）
     }
 
     @Test
     void fail_orderNotFound_rejected() {
-        AfterSaleWorkflowGraph graph = returnGraph(autoApprove(), submitReturning("WF-RET-999"));
+        SubmitCanary submitter = new SubmitCanary(false);
+        AfterSaleWorkflowGraph graph = returnGraph(submitter, judgeEligible());
 
         AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-999"));
 
         assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Rejected.class);
         assertThat(((AfterSaleWorkflowOutcome.Rejected) outcome).reason()).isEqualTo(Reason.ORDER_NOT_FOUND);
         assertThat(((AfterSaleWorkflowOutcome.Rejected) outcome).customerMessage()).contains("ORD-999");
+        assertThat(submitter.count.get()).isZero();
+    }
+
+    // ---- fail 路径：Agent 资格裁决 INELIGIBLE（政策类驳回，话术=Agent 产出，不建单） ----
+
+    @Test
+    void fail_agentIneligible_rejectedPolicyReason_agentMessage_noTicket() {
+        SubmitCanary submitter = new SubmitCanary(false);
+        AfterSaleWorkflowGraph graph = returnGraph(submitter,
+                judgeIneligible("您的订单已超过7天无理由退货期限，如遇质量问题可联系人工客服。"));
+
+        AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-002"));
+
+        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Rejected.class);
+        AfterSaleWorkflowOutcome.Rejected r = (AfterSaleWorkflowOutcome.Rejected) outcome;
+        assertThat(r.reason()).isEqualTo(Reason.POLICY_INELIGIBLE);
+        assertThat(r.customerMessage()).contains("7天无理由退货期限").contains("人工客服");
+        assertThat(submitter.count.get()).isZero(); // 资格不满足不建单
+    }
+
+    @Test
+    void agentUncertain_failsafeToHumanTicket() {
+        // fail-safe（2026-09-19 定案）：裁决 UNCERTAIN（政策未覆盖/模型失败）不冒充驳回、不盲放行 →
+        // 建人工工单交管理员重点复核
+        SubmitCanary submitter = new SubmitCanary(false);
+        AfterSaleWorkflowGraph graph = returnGraph(submitter, judgeUncertain());
+
+        AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-001"));
+
+        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Pending.class);
+        assertThat(submitter.count.get()).isEqualTo(1);
     }
 
     // ---- ctx.userId 覆盖 baked currentUserId（per-request 真实用户·[[business-tools-workflow-dag]] 真接入）----
@@ -124,7 +194,8 @@ class AfterSaleWorkflowGraphTest {
     void ctxUserId_overridesBakedCurrentUserId_validatesAgainstRealUser() {
         // 图构造期 baked currentUserId=10086（mock 兜底）；ctx.userId=10010（前端 ChatRequest 传入·per-request）
         // 优先于 baked → 校验对真实用户 10010 做。ORD-001 属 10086 → 10010≠10086 → ORDER_NOT_OWNED。
-        AfterSaleWorkflowGraph graph = returnGraph(autoApprove(), submitReturning("WF-RET-10010"));
+        SubmitCanary submitter = new SubmitCanary(false);
+        AfterSaleWorkflowGraph graph = returnGraph(submitter, judgeEligible());
 
         PipelineContext ctx = new PipelineContext("s1", "退货 ORD-001");
         ctx.setUserId("10010"); // 真实用户 10010（非图 baked 10086，查他人单→驳回）
@@ -139,95 +210,49 @@ class AfterSaleWorkflowGraphTest {
     @Test
     void demoUser_10086_ownOrder_validatesPass_notOrderNotOwned() {
         // 用户钦定"工具调用对应数据必须准确"：前端真实用户 userId=10086 / vipLevel=gold 须在 mock 存在，
-        // 且其自有订单 ORD-001 校验为 pass（Approved），而非误判 ORDER_NOT_OWNED。
-        // 修前 mock 种子 U100≠10086 → 真实用户查自己的单被误判非本人（ORDER_NOT_OWNED）。本测 RED 驱动重播种。
-        AfterSaleWorkflowGraph graph = returnGraph(autoApprove(), submitReturning("WF-RET-10086"));
+        // 且其自有订单 ORD-001 校验为 pass（建单提交），而非误判 ORDER_NOT_OWNED。
+        SubmitCanary submitter = new SubmitCanary(false);
+        AfterSaleWorkflowGraph graph = returnGraph(submitter, judgeEligible());
         PipelineContext ctx = new PipelineContext("s1", "退货 ORD-001");
         ctx.setUserId("10086"); // 前端真实用户（per-request·ChatRequest.userId）
         AfterSaleWorkflowOutcome outcome = graph.invoke(ctx);
 
-        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Approved.class);
+        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Pending.class);
     }
 
-    // ---- approval 终态 ----
+    // ---- 退款流：PolicyDomain.REFUND ----
 
     @Test
-    void approvalTimeout_returnsTimeout() {
-        // validate pass（ORD-001）→ submit → approval Timeout → END
-        WorkflowApprovalDecision timeout = wr -> new WorkflowApprovalDecision.Timeout();
-        AfterSaleWorkflowGraph graph = returnGraph(timeout, submitReturning("WF-RET-T1"));
-
-        AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-001"));
-
-        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Timeout.class);
-    }
-
-    @Test
-    void approvalDeniedThenApproved_retriesSubmitThenEnds() {
-        // approval 首次驳回→Retry 回 submit 改写重提，二次批准→END（镜像 RefundWorkflowGraphTest Slice 2）
-        AtomicInteger submitCount = new AtomicInteger();
-        AfterSaleSubmitService submit = ctx -> "WF-RET-D" + submitCount.incrementAndGet();
-        WorkflowApprovalDecision denyThenApprove = wr ->
-                "WF-RET-D1".equals(wr)
-                        ? new WorkflowApprovalDecision.Denied("首次驳回·改写重提")
-                        : new WorkflowApprovalDecision.Approved("auto");
-        AfterSaleWorkflowGraph graph = returnGraph(denyThenApprove, submit);
-
-        AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退货 ORD-001"));
-
-        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Approved.class);
-        assertThat(submitCount.get()).isEqualTo(2); // 驳回→Retry→二次提交→批准→END
-    }
-
-    // ---- 退款流：RefundValidationRule + PolicyDomain.REFUND ----
-
-    @Test
-    void refundFlow_ownedWithinWindow_approved() {
-        AtomicInteger submitCount = new AtomicInteger();
-        AfterSaleSubmitService submit = ctx -> {
-            submitCount.incrementAndGet();
-            return "WF-RFD-001";
-        };
-        // 退款图：REFUND 域 + RefundValidationRule（退款窗口 30 天，ORD-001 3 天前在窗内）
+    void refundFlow_ownedOrder_agentEligible_submitted() {
+        SubmitCanary submitter = new SubmitCanary(false);
         AfterSaleWorkflowGraph graph = new AfterSaleWorkflowGraph(userService, orderService, policyService,
-                PolicyDomain.REFUND, new RefundValidationRule(CLOCK),
-                submit, autoApprove(), "10086");
+                PolicyDomain.REFUND, judgeEligible(), submitter, "10086");
 
         AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退款 ORD-001"));
 
-        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Approved.class);
-        assertThat(submitCount.get()).isEqualTo(1);
+        assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Pending.class);
+        assertThat(submitter.count.get()).isEqualTo(1);
     }
 
     @Test
-    void refundFlow_beyondWindow_rejectedRefundWindowExpired() {
-        // ORD-002 11 天前 → 退款窗口 30 天内 → 仍 pass（退款窗口比退货宽）
-        // 验退款流用 REFUND_WINDOW_EXPIRED 语义：构造超 30 天订单须另备数据；此处验 7 天外但 30 天内=pass
-        // 改用 ORD-001（3 天前）+ 退款窗口收缩到 2 天验证 REFUND_WINDOW_EXPIRED 分支
+    void refundFlow_agentIneligible_rejected() {
+        SubmitCanary submitter = new SubmitCanary(false);
         AfterSaleWorkflowGraph graph = new AfterSaleWorkflowGraph(userService, orderService, policyService,
-                PolicyDomain.REFUND, new RefundValidationRule(CLOCK, java.time.Duration.ofDays(2)),
-                submitReturning("WF-RFD-EXP"), autoApprove(), "10086");
+                PolicyDomain.REFUND, judgeIneligible("您的订单按平台退款政策不符合办理条件。"), submitter, "10086");
 
         AfterSaleWorkflowOutcome outcome = graph.invoke(new PipelineContext("s1", "退款 ORD-001"));
 
-        // ORD-001 3 天前 > 2 天退款窗口 → REFUND_WINDOW_EXPIRED
         assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Rejected.class);
-        assertThat(((AfterSaleWorkflowOutcome.Rejected) outcome).reason()).isEqualTo(Reason.REFUND_WINDOW_EXPIRED);
+        assertThat(((AfterSaleWorkflowOutcome.Rejected) outcome).reason()).isEqualTo(Reason.POLICY_INELIGIBLE);
     }
 
     @Test
-    void extractOrderId_matchesLowercaseAndNoDashVariants() {
-        assertThat(AfterSaleWorkflowGraph.extractOrderIdFrom("退款 ord0001")).isEqualTo("ord0001");
+    void extractOrderId_normalizesToUpperCase() {
+        // 2026-09-17 定案：(?i) 只管匹配、group() 原样返回——小写进精确键查找会 miss
+        // （实测「ord-001退款」→ 误判「未查询到订单」）。提取点统一归一化大写。
+        assertThat(AfterSaleWorkflowGraph.extractOrderIdFrom("退款 ord0001")).isEqualTo("ORD0001");
         assertThat(AfterSaleWorkflowGraph.extractOrderIdFrom("退款 ORD001")).isEqualTo("ORD001");
-        assertThat(AfterSaleWorkflowGraph.extractOrderIdFrom("退款 ord-001")).isEqualTo("ord-001");
+        assertThat(AfterSaleWorkflowGraph.extractOrderIdFrom("退款 ord-001")).isEqualTo("ORD-001");
         assertThat(AfterSaleWorkflowGraph.extractOrderIdFrom("退款 ORD-001")).isEqualTo("ORD-001");
-    }
-
-    @Test
-    void approved_carriesOrderStatusAndPolicyConclusion() {
-        AfterSaleWorkflowOutcome.Approved a = new AfterSaleWorkflowOutcome.Approved("auto", "已发货", "满足退款政策");
-        assertThat(a.orderStatus()).isEqualTo("已发货");
-        assertThat(a.policyConclusion()).isEqualTo("满足退款政策");
-        assertThat(new AfterSaleWorkflowOutcome.Approved("auto").orderStatus()).isNull(); // 兼容构造
     }
 }

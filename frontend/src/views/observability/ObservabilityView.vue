@@ -41,7 +41,15 @@ const empty: ObservabilitySummary = {
 }
 
 const s = computed<ObservabilitySummary>(() => summary.value ?? empty)
-const hasData = computed(() => s.value.chatRequests > 0 || s.value.totalTurns > 0)
+// 有任何真实信号即亮灯：Micrometer 进程内计数器（outcome/降级）实时可读；
+// totalTurns 走异步落库（MQ→MySQL）有滞后——只看 chatRequests/totalTurns 会误判"尚无流量"。
+const hasData = computed(
+  () =>
+    s.value.chatRequests > 0 ||
+    s.value.totalTurns > 0 ||
+    s.value.degradationTotal > 0 ||
+    s.value.outcomeOk + s.value.outcomeDegraded + s.value.outcomeShortCircuit > 0,
+)
 
 const degradRate = computed(() => {
   if (s.value.chatRequests === 0) return 0
@@ -55,8 +63,8 @@ const scenarioCounts = computed(() => scenarios.value.map((k) => s.value.degrada
 
 const outcomeOption = computed<EChartsOption>(() => ({
   backgroundColor: 'transparent',
-  tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)', textStyle: { color: '#e8ecf5' } },
-  legend: { bottom: 2, textStyle: { color: '#9aa4bd', fontSize: 11 }, itemWidth: 8, itemHeight: 8 },
+  tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)', textStyle: { color: '#111827' } },
+  legend: { bottom: 2, textStyle: { color: '#111827', fontSize: 11 }, itemWidth: 8, itemHeight: 8 },
   series: [
     {
       type: 'pie',
@@ -77,8 +85,8 @@ const outcomeOption = computed<EChartsOption>(() => ({
 
 const ragOption = computed<EChartsOption>(() => ({
   backgroundColor: 'transparent',
-  tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)', textStyle: { color: '#e8ecf5' } },
-  legend: { bottom: 2, textStyle: { color: '#9aa4bd', fontSize: 11 }, itemWidth: 8, itemHeight: 8 },
+  tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)', textStyle: { color: '#111827' } },
+  legend: { bottom: 2, textStyle: { color: '#111827', fontSize: 11 }, itemWidth: 8, itemHeight: 8 },
   series: [
     {
       type: 'pie',

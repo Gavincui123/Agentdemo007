@@ -13,8 +13,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 黄金数据集加载 + 全量跑通冒烟（Phase 15·T72 ③环节测评 golden data 验证 + 生产冒烟·单元级）。
  *
- * <p>加载 dev-plan §Phase15 标准 8 stage 黄金集（injection/intent/routing/rag/tool/hitl/
- * degradation/audit），断言：每文件 stage 名与预期一致、cases 非空、每例 id/input/expected 非空
+ * <p>加载 dev-plan §Phase15 标准 8 stage 黄金集 + 红队扩展 stage（rag-redteam，污染语料/召回冲突
+ * 演示；真库模式经 /eval/run stage 过滤单独执行），断言：每文件 stage 名与预期一致、cases 非空、
+ * 每例 id/input/expected 非空
  * （解析兼容性回归守卫——验 EvalFile/EvalCase/EvalExpected 跨全真实数据集可用，非仅 injection 单文件）；
  * 并以 trivial 执行器经 {@link EvalExecutor#run} 全量跑通，断言 8 stage 名齐全 + totalCases 聚合正确
  * （评估器跨全真实数据集端到端可用，生产冒烟·单元级代理——真实高并发/故障注入冒烟属部署门禁）。
@@ -26,10 +27,11 @@ class GoldenSuiteTest {
 
     private static final List<String> STANDARD_SUITE = List.of(
             "eval/injection.json", "eval/intent.json", "eval/routing.json", "eval/rag.json",
+            "eval/rag-redteam.json",
             "eval/tool.json", "eval/hitl.json", "eval/degradation.json", "eval/audit.json");
 
     private static final List<String> EXPECTED_STAGES = List.of(
-            "injection", "intent", "routing", "rag", "tool", "hitl", "degradation", "audit");
+            "injection", "intent", "routing", "rag", "rag-redteam", "tool", "hitl", "degradation", "audit");
 
     private EvalExecutor executorWithTrivialPipeline() {
         PipelineExecutor trivial = new PipelineExecutor() {
@@ -62,7 +64,7 @@ class GoldenSuiteTest {
             }
         }
 
-        // 全量跑通冒烟：8 stage 名齐全 + totalCases 聚合正确
+        // 全量跑通冒烟：9 stage 名齐全 + totalCases 聚合正确
         EvalReport report = executor.run(files);
         assertThat(report.stages()).extracting(StageReport::stage)
                 .containsExactlyInAnyOrderElementsOf(EXPECTED_STAGES);

@@ -63,7 +63,7 @@ public class RoutePromptBuilder {
         String transcript = transcript(history);
         String q = query == null ? "（空）" : query;
         StringBuilder sb = new StringBuilder();
-        sb.append("你是小哲电商客服系统的路由决策器。根据对话历史与用户本轮问题，产出一份路由候选 JSON。")
+        sb.append("你是电商客服系统的路由决策器。根据对话历史与用户本轮问题，产出一份路由候选 JSON。")
           .append("只输出 JSON，不要附加说明。字段如下（snake_case）：\n")
           .append(FIELD_SPEC.stream().map(f -> "  - " + f).collect(Collectors.joining("\n"))).append("\n")
           .append("约束：intent 只能从以下选一个：").append(String.join(" / ", baselines.knownIntents())).append("；")
@@ -83,10 +83,13 @@ public class RoutePromptBuilder {
           .append("只能是 order_query / refund_status_query / product_query / promotion_query / faq_query 之一，")
           .append("不得等于 intent；其余情况留空（null）。\n");
         if (pendingIntent != null) {
+            // 2026-09-17 收紧（实测「ord-001退款」被 pending 偏置成 return_request 续跑退货流）：
+            // 显式业务诉求 > 未完成意图；只有"纯补单号"才允许沿用 pending intent。
             sb.append("本会话有未完成的 ").append(pendingIntent)
-              .append(" 等待订单号。若本轮提供了订单号且未提出与之矛盾的新诉求，intent 应填 ")
-              .append(pendingIntent)
-              .append("；若本轮另有明确诉求（如查物流、商品咨询），按本轮诉求填 intent，不要被未完成意图带跑。\n");
+              .append(" 等待订单号（Turn-2 续跑参考）。优先级：用户本轮的显式业务诉求永远高于未完成意图——")
+              .append("仅当本轮只是补充订单号、未提及任何其他业务动作时，intent 才填 ").append(pendingIntent)
+              .append("；本轮一旦显式提到其他动作（如退款/退货/查订单/商品咨询），一律按本轮诉求填 intent，")
+              .append("不要被未完成意图带跑。\n");
         }
         sb.append("tool_candidates：").append(String.join(" / ", toolCandidates)).append("\n")
           .append("示例（退款请求）：{\"intent\":\"refund_request\",\"needs_rag\":true,\"needs_business_tools\":true,")

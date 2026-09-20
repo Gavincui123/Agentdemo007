@@ -37,6 +37,7 @@ public class OrderQueryService {
         if (orderId == null) {
             return Optional.empty();
         }
-        return Optional.ofNullable(ORDERS.get(orderId));
+        // 防御性归一化（trim+大写）：调用方可能传用户原话里的 "ord-001"（精确键会 miss）
+        return Optional.ofNullable(ORDERS.get(orderId.trim().toUpperCase(java.util.Locale.ROOT)));
     }
 }

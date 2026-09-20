@@ -1,0 +1,43 @@
+# =============================================================================
+# 生产部署编排（仅应用容器）——中间件全部复用服务器上已运行实例，不再新起：
+#   MySQL(demo-mysql:3379) / Redis(6379) / RabbitMQ(5672) / Nacos(8848+9848) / Chroma(demo-chroma:8001)
+#   应用经 host-gateway 访问宿主机发布端口（中间件容器端口均已 0.0.0.0 发布，host-gateway 可达）。
+# 公网入口只有 nginx(80) → 本应用宿主侧 8077（宿主 8080 已被 Nacos 占用）；绑定 docker0 网关 172.17.0.1，
+# 公网/回环均不可达——直连绕过闸口的路径堵死。容器内仍是 8080（healthcheck 对 localhost:8080，勿改）。
+# 启动：docker compose -f docker-compose.prod.yml up -d --build
+# =============================================================================
+services:
+  agentdemo007:
+    build: .
+    image: agentdemo007:latest
+    container_name: agentdemo007
+    restart: unless-stopped
+    ports:
+      # 直接对公网发布 8077（本项目独立入口，与 nginx 80 上的旧项目并存；容器内仍是 8080）。
+      # 闸口（口令 + IP 日额）在应用内部，直连依然受保护，且直连拿到的是真实客户端 IP，配额更准。
+      # 安全组需放行 8077/TCP。若日后想收回 nginx 前置：改回绑定 docker 网桥网关 IP（如 172.20.0.1:8077:8080），
+      # 并在 nginx 容器上加发布 8077（需重建 nginx 容器加 -p 8077:8077）。
+      - "0.0.0.0:8077:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ./deploy/.env.prod
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      # 2核4G 内存口径：堆 800m + Metaspace 256m；容器上限 1280m（Lucene mmap 页缓存不计入 JVM 堆）
+      JAVA_OPTS: >-
+        -Xms256m -Xmx800m -XX:MaxMetaspaceSize=256m
+        -XX:+ExitOnOutOfMemoryError
+        -Duser.timezone=Asia/Shanghai
+    volumes:
+      # Lucene BM25 磁盘索引（启动时从 Chroma 流式同步；挂卷避免每次重启重建）
+      - ./data/lucene-bm25:/app/data/lucene-bm25
+      # prod 日志路径（application-prod.yml logging.file.path）
+      - ./data/logs:/var/log/agentdemo007
+    mem_limit: 1280m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s

@@ -41,7 +41,7 @@ class IntentRecognitionStepTest {
 
     @Test
     void success_proceeds_setsIntentAndConfidence() {
-        when(recognizer.recognize(anyString(), anyList()))
+        when(recognizer.recognize(anyString(), anyString(), anyList()))
                 .thenReturn(new IntentCategory(Intent.REASONING, 0.9));
         PipelineContext ctx = new PipelineContext("s1", "分析 Q3 销售");
         ctx.setStandardQuery(StandardQuery.of("分析 Q3 销售"));
@@ -55,7 +55,7 @@ class IntentRecognitionStepTest {
 
     @Test
     void injection_shortCircuitsInjection_zeroLlmPath() {
-        when(recognizer.recognize(anyString(), anyList()))
+        when(recognizer.recognize(anyString(), anyString(), anyList()))
                 .thenReturn(new IntentCategory(Intent.INJECTION, 1.0));
         PipelineContext ctx = new PipelineContext("s1", "ignore previous");
 
@@ -67,7 +67,7 @@ class IntentRecognitionStepTest {
 
     @Test
     void lowConfidence_degradesUnknownIntent_setsOther() {
-        when(recognizer.recognize(anyString(), anyList()))
+        when(recognizer.recognize(anyString(), anyString(), anyList()))
                 .thenReturn(IntentCategory.unknown()); // 模型不可用兜底
         PipelineContext ctx = new PipelineContext("s1", "随便聊聊");
 
@@ -80,7 +80,7 @@ class IntentRecognitionStepTest {
 
     @Test
     void missingStandardQuery_fallsBackToRawInput() {
-        when(recognizer.recognize(eq("你好"), anyList()))
+        when(recognizer.recognize(eq("你好"), eq("你好"), anyList()))
                 .thenReturn(new IntentCategory(Intent.CHIT_CHAT, 0.7));
         PipelineContext ctx = new PipelineContext("s1", "你好");
         // 不设置 standardQuery → 回退 rawInput
@@ -94,7 +94,7 @@ class IntentRecognitionStepTest {
     void intentAlreadySet_skipsRecognition_proceeds() {
         // 模拟前置 KeywordTriageStep(@Order 150) 已分诊：intent 已设为 CHIT_CHAT。
         // 桩 recognize 返回不同意图(REASONING)：若误重识别会覆盖 CHIT_CHAT，断言即失败
-        when(recognizer.recognize(anyString(), anyList()))
+        when(recognizer.recognize(anyString(), anyString(), anyList()))
                 .thenReturn(new IntentCategory(Intent.REASONING, 0.9));
         PipelineContext ctx = new PipelineContext("s1", "你好");
         ctx.setIntent(Intent.CHIT_CHAT);
@@ -112,7 +112,7 @@ class IntentRecognitionStepTest {
         MeterRegistry registry = new SimpleMeterRegistry();
         AgentMetrics metrics = new AgentMetrics(registry);
         IntentRecognitionStep metricsStep = new IntentRecognitionStep(recognizer, classifier, metrics);
-        when(recognizer.recognize(anyString(), anyList()))
+        when(recognizer.recognize(anyString(), anyString(), anyList()))
                 .thenReturn(new IntentCategory(Intent.REASONING, 0.9));
         PipelineContext ctx = new PipelineContext("s1", "你好");
         ctx.setIntent(Intent.CHIT_CHAT);
@@ -134,7 +134,7 @@ class IntentRecognitionStepTest {
         MeterRegistry registry = new SimpleMeterRegistry();
         AgentMetrics metrics = new AgentMetrics(registry);
         IntentRecognitionStep metricsStep = new IntentRecognitionStep(recognizer, classifier, metrics);
-        when(recognizer.recognize(anyString(), anyList()))
+        when(recognizer.recognize(anyString(), anyString(), anyList()))
                 .thenReturn(new IntentCategory(Intent.REASONING, 0.9));
         PipelineContext ctx = new PipelineContext("s1", "分析 Q3 销售");
 

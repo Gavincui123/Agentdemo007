@@ -1,4 +1,5 @@
 import { http } from './http'
+import { getAccessCode } from './gate'
 import { streamChat, type SseHandlers } from '../utils/sse'
 
 /**
@@ -40,15 +41,27 @@ export function parseChatResponse(data: string): ChatResponse | null {
   }
 }
 
+/** 访问闸口口令头（闸口开启时必带；未存口令不带，后端 401 话术引导回登录页）。 */
+function accessHeaders(): Record<string, string> {
+  const code = getAccessCode()
+  return code ? { 'X-Access-Code': code } : {}
+}
+
 /** 同步对话：POST /chat（经拦截器解包），返回 {@link ChatResponse}。 */
 export async function sendChat(message: string, sessionId?: string): Promise<ChatResponse> {
   const body: Record<string, string> = { message }
   if (sessionId) body.sessionId = sessionId
-  return http.post('/chat', body) as unknown as Promise<ChatResponse>
+  return http.post('/chat', body, { headers: accessHeaders() }) as unknown as Promise<ChatResponse>
 }
 
 export interface StreamTurnHandlers {
   onTurn: (res: ChatResponse) => void
+  /** step_started 事件：步骤开始（step=PipelineStep.name，如 "RagStep"）。 */
+  onStepStarted?: (step: string) => void
+  /** step_finished 事件：outcome ∈ PROCEED/SHORT_CIRCUIT/DEGRADE/RETRY/EXCEPTION；scenario 仅降级非空。 */
+  onStepFinished?: (step: string, outcome: string, scenario: string | null) => void
+  /** reply_chunk 事件：流式部分文本块（逐段追加渲染）。 */
+  onChunk?: (text: string) => void
   onOpen?: (traceId: string | null) => void
   onError?: (err: Error, willRetry: boolean) => void
   onClose?: () => void
@@ -56,7 +69,21 @@ export interface StreamTurnHandlers {
   maxRetries?: number
 }
 
-/** 流式对话：POST /chat/stream（fetch-SSE），每个 {@link ChatResponse} 回调 onTurn。 */
+/** 从事件 JSON 抽字符串字段；非 JSON 或非字符串 → null。 */
+function parseStringField(data: string, field: string): string | null {
+  try {
+    const obj = JSON.parse(data) as Record<string, unknown>
+    return typeof obj?.[field] === 'string' ? (obj[field] as string) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 流式对话：POST /chat/stream（fetch-SSE），按事件名分发——
+ * {@code reply_ready}→onTurn（终态，与 /chat 同形）；{@code step_started}/{@code step_finished}→
+ * 逐步进度；{@code reply_chunk}→流式 token。未知事件名/载荷形状不符→静默丢弃（进度 best-effort）。
+ */
 export function streamChatTurn(
   message: string,
   sessionId: string | null,
@@ -65,9 +92,30 @@ export function streamChatTurn(
   const body: Record<string, string> = { message }
   if (sessionId) body.sessionId = sessionId
   const sseHandlers: SseHandlers = {
-    onMessage: (data) => {
-      const res = parseChatResponse(data)
-      if (res) handlers.onTurn(res)
+    headers: accessHeaders(),
+    onEvent: (name, data) => {
+      if (name === 'reply_ready') {
+        const res = parseChatResponse(data)
+        if (res) handlers.onTurn(res)
+        return
+      }
+      if (name === 'step_started') {
+        const step = parseStringField(data, 'step')
+        if (step) handlers.onStepStarted?.(step)
+        return
+      }
+      if (name === 'step_finished') {
+        const step = parseStringField(data, 'step')
+        if (!step) return
+        const outcome = parseStringField(data, 'outcome') ?? 'PROCEED'
+        const scenario = parseStringField(data, 'scenario')
+        handlers.onStepFinished?.(step, outcome, scenario)
+        return
+      }
+      if (name === 'reply_chunk') {
+        const text = parseStringField(data, 'text')
+        if (text) handlers.onChunk?.(text)
+      }
     },
     onOpen: (traceId) => handlers.onOpen?.(traceId),
     onError: handlers.onError,

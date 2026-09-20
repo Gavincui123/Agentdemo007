@@ -96,7 +96,7 @@ class LangChain4jModelExecutorStreamingBodyCaptureTest {
         StreamingCapturingClient client = new StreamingCapturingClient();
         // disableThinking=true + provider disableThinkingParams={enable_thinking:false} → 须注入 body
         LangChain4jModelExecutor exec = new LangChain4jModelExecutor(SF_BASE, "dummy-key",
-                Map.of("enable_thinking", false), Duration.ofSeconds(60), new StreamingCapturingBuilder(client));
+                Map.of("enable_thinking", false), Duration.ofSeconds(60), null, new StreamingCapturingBuilder(client));
 
         List<String> tokens = new ArrayList<>();
         AtomicReference<String> full = new AtomicReference<>();

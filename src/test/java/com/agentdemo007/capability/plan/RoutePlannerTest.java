@@ -117,7 +117,7 @@ class RoutePlannerTest {
         // 全链路 round-trip：planner→真 LlmRouteCandidateSource→mock ChatLlmService.decide
         // →真 RouteCandidateParser→converge→采纳（铁律②：从假 source 迭代到真组件验 wiring）
         ChatLlmService llm = mock(ChatLlmService.class);
-        when(llm.decide(anyString())).thenReturn(
+        when(llm.decide(anyString(), anyString())).thenReturn(
                 "{\"intent\":\"order_query\",\"needs_rag\":false,\"needs_business_tools\":true,"
                         + "\"required_tools\":[\"get_order_logistics\"],\"knowledge_domains\":[],"
                         + "\"risk_level\":\"low\",\"requires_workflow\":false,\"fallback_policy\":\"tool_first\"}");

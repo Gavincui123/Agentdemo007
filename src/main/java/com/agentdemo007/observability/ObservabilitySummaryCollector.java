@@ -5,10 +5,13 @@ import com.agentdemo007.gateway.config.ModelConfigCenter;
 import com.agentdemo007.persistence.repository.ChatTurnRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.LongSupplier;
 
 /**
  * 可观测快照采集器（Phase 19·T99）。
@@ -35,6 +38,8 @@ import java.util.Map;
 @Component
 public class ObservabilitySummaryCollector {
 
+    private static final Logger log = LoggerFactory.getLogger(ObservabilitySummaryCollector.class);
+
     private final MeterRegistry meterRegistry;
     private final ModelConfigCenter configCenter;
     private final HumanTicketService ticketService;
@@ -54,7 +59,8 @@ public class ObservabilitySummaryCollector {
      * 派生可观测快照（每次请求实时聚合，不缓存、不持久化）。
      *
      * <p>dev {@code SimpleMeterRegistry} 内存计数为"进程累计当下值"；prod Prometheus 后端
-     * 由其自身聚合。空指标/空注册表/无工单→对应字段 0 或空 Map，端点恒可用不抛。
+     * 由其自身聚合。空指标/空注册表→对应字段 0；结构性读数（模型注册中心/HITL 工单/MySQL 轮次）
+     * 抛异常→该字段降级为 0 并 WARN（②每步降级：部分源故障不拖垮整个快照，端点恒可用不抛）。
      */
     public ObservabilitySummary summary() {
         return new ObservabilitySummary(
@@ -69,12 +75,22 @@ public class ObservabilitySummaryCollector {
                 tagged(AgentMetrics.TOOL, AgentMetrics.SUCCESS_TAG, AgentMetrics.FALSE),
                 tagged(AgentMetrics.HITL, AgentMetrics.TRIGGERED_TAG, AgentMetrics.TRUE),
                 tagged(AgentMetrics.FAILOVER, AgentMetrics.OUTCOME_TAG, "exhausted"),
-                configCenter.registry().all().size(),
-                configCenter.registry().enabled().size(),
-                ticketService.pendingTickets().size(),
-                turnRepository.count(),
-                turnRepository.countByDegradedTrue()
+                (int) safeRead("模型注册中心", () -> configCenter.registry().all().size()),
+                (int) safeRead("模型注册中心", () -> configCenter.registry().enabled().size()),
+                (int) safeRead("HITL 工单", () -> ticketService.pendingTickets().size()),
+                safeRead("轮次统计", () -> turnRepository.count()),
+                safeRead("轮次统计", () -> turnRepository.countByDegradedTrue())
         );
+    }
+
+    /** 结构性读数降级护栏：数据源异常→0 + WARN（部分源故障不拖垮整个快照）。 */
+    private long safeRead(String source, LongSupplier read) {
+        try {
+            return read.getAsLong();
+        } catch (Exception e) {
+            log.warn("可观测快照结构读数失败，降级为 0：source={} reason={}", source, e.getMessage());
+            return 0L;
+        }
     }
 
     /** 聚合某 meter 名下全部 counter 的计数值（跨所有标签组合）。空→0。 */

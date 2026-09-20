@@ -1,6 +1,7 @@
 package com.agentdemo007.common.pipeline;
 
 import com.agentdemo007.capability.plan.RoutePlan;
+import com.agentdemo007.capability.tool.ToolCallResult;
 import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.progress.ProgressEmitter;
 import com.agentdemo007.common.trace.TraceId;
@@ -67,11 +68,28 @@ public class PipelineContext {
     // [[business-tools-workflow-dag]] §2.2：tool-sourced 高置信外部系统事实通道（RUNTIME 工具结果：
     // 订单/用户/商品查询），SystemAnchorLayer 消费进 Runtime 块；区别于 toolResults（COMPUTE 简单计算）
     private List<String> runtimeFacts = new ArrayList<>();
+    // Phase 9 工具韧性错误通道（2026-09-17 有界 Agent loop 配套，§5.14 强类型）：失败工具调用结果
+    // （ToolCallResult.isError()，content=结构化错误 JSON）单独收口，不混 runtimeFacts 高置信事实；
+    // ObjectiveDataLayer 渲染「工具执行异常」块——异常信息交终答 LLM 如实向客户说明/致歉，系统不吞异常
+    private List<ToolCallResult> toolErrors = new ArrayList<>();
+    // 有界 Agent loop 探测模型在工具环节（第 2 轮起）转出的文本回复（自纠正放弃后的澄清/策略话术）；
+    // ObjectiveDataLayer 渲染「工具环节反馈」块交终答 LLM 整合。null=无。
+    private String toolLoopReply;
+    // [[refusal-design]] 工具无数据通道：工具连通且执行成功、但业务侧未命中数据（订单不存在/
+    // 无可售商品/政策库无该条目，{@code hit=false}）的事实清单——区别于 {@code toolErrors}（调用失败）
+    // 与 {@code runtimeFacts}（查到数据）。ObjectiveDataLayer 渲染「工具无数据」块，框定终答 LLM
+    // 必须如实告知未查到、不得编造近似结果。空=本轮所有工具调用都有数据。
+    private List<String> toolDataMisses = new ArrayList<>();
+    // [[refusal-design]] 知识 grounding 未命中标记：RagStep 漏斗跑过但终态零片段（空召回/终闸不达标/
+    // 注入扫描清空/链路异常）时置位。RefusalGateStep(@690) 据此裁决拒答（strict 短路 / prompt 注入
+    // 拒答约束）；SystemAnchorLayer 据此在 Runtime 块追加"无依据不得作答"约束。闲聊/计划免 RAG 的
+    // 正常跳过不置位（非"需要知识却没知识"）。
+    private boolean groundingMiss;
     private List<ChatMessage> assembledPrompt = new ArrayList<>();
     // Phase 11/12 能力与输出层强类型字段（§5.14：hitlTicketId/modelResponse 收口于此）
     private String hitlTicketId;
     private String modelResponse;
-    // 高风险固定工作流（[[per-intent-dag]]）：RefundWorkflowGraph submit 节点产退款请求 id，审批门消费
+    // 高风险固定工作流（[[per-intent-dag]]）：AfterSaleWorkflowGraph submit 节点产售后请求 id，审批门消费
     private String workflowResult;
     // [[business-tools-workflow-dag]] §2.4：业务驳回话术短路槽（Rejected 终态 → WorkflowExecutionStep 写此，
     // OutputStep 守卫跳 LLM；非业务驳回为 null，走原 LLM 链不变）。业务驳回≠系统故障，不混 DegradationScenario。
@@ -289,6 +307,60 @@ public class PipelineContext {
 
     public void setRuntimeFacts(List<String> runtimeFacts) {
         this.runtimeFacts = (runtimeFacts != null) ? new ArrayList<>(runtimeFacts) : new ArrayList<>();
+    }
+
+    /**
+     * 工具失败结果通道（Phase 9 工具韧性·2026-09-17 有界 Agent loop 配套）：失败工具调用
+     * （{@link ToolCallResult#isError()}，content=结构化错误 JSON）单独收口——<b>不混
+     * {@link #runtimeFacts} 高置信事实</b>（错误不是事实）。ObjectiveDataLayer 消费渲染
+     * 「工具执行异常」块，终答 LLM 据此如实向客户说明/致歉；空则跳过。
+     */
+    public List<ToolCallResult> toolErrors() {
+        return toolErrors;
+    }
+
+    public void setToolErrors(List<ToolCallResult> toolErrors) {
+        this.toolErrors = (toolErrors != null) ? new ArrayList<>(toolErrors) : new ArrayList<>();
+    }
+
+    /**
+     * 有界 Agent loop 探测模型在工具环节（第 2 轮起）转出的文本回复（错误回喂后模型放弃自纠正的
+     * 澄清/策略话术）。ObjectiveDataLayer 渲染「工具环节反馈」块交终答 LLM 整合；null=无。
+     */
+    public String toolLoopReply() {
+        return toolLoopReply;
+    }
+
+    public void setToolLoopReply(String toolLoopReply) {
+        this.toolLoopReply = toolLoopReply;
+    }
+
+    // ---- [[refusal-design]] 拒答机制字段 ----
+
+    /**
+     * 工具无数据事实清单（工具连通且成功执行、但业务侧未命中数据的查询结果）。区别于
+     * {@link #toolErrors}（调用失败）——"没有数据"本身是真实事实，需框定终答 LLM 如实转告、
+     * 不得编造近似结果；{@link com.agentdemo007.context.ObjectiveDataLayer} 渲染「工具无数据」块。
+     */
+    public List<String> toolDataMisses() {
+        return toolDataMisses;
+    }
+
+    public void setToolDataMisses(List<String> toolDataMisses) {
+        this.toolDataMisses = (toolDataMisses != null) ? new ArrayList<>(toolDataMisses) : new ArrayList<>();
+    }
+
+    /**
+     * 知识 grounding 未命中标记：本轮 RAG 漏斗实际执行且终态零片段。由 {@code RagStep.skipRag}
+     * 置位；闲聊/路由计划免 RAG 的正常跳过<b>不置位</b>。消费者：{@code RefusalGateStep}（拒答裁决）、
+     * {@code SystemAnchorLayer}（Runtime 块拒答约束）。
+     */
+    public boolean groundingMiss() {
+        return groundingMiss;
+    }
+
+    public void setGroundingMiss(boolean groundingMiss) {
+        this.groundingMiss = groundingMiss;
     }
 
     /** 三层隔离拼接后的最终上下文（Sys→Runtime→His→RAG→Tool→User，供 Phase 12 网关步骤消费）。 */

@@ -31,7 +31,7 @@ class QueryRewriterEnrichmentTest {
 
     @Test
     void rewrite_populatesEnrichmentFromRewriteText_standardQueryUnchanged() {
-        when(llm.decide(anyString()))
+        when(llm.decide(anyString(), anyString()))
                 .thenReturn("查订单 ORD123456 在 Q3 的状态");
         PipelineContext ctx = new PipelineContext("s1", "查订单");
         ctx.setHistory(List.of(new ChatMessage.User("看 Q3 销售"), new ChatMessage.Ai("好的")));
@@ -48,7 +48,7 @@ class QueryRewriterEnrichmentTest {
 
     @Test
     void rewriteFallsBack_enrichmentExtractedFromRawInput() {
-        when(llm.decide(anyString())).thenReturn("   "); // 空输出→回退
+        when(llm.decide(anyString(), anyString())).thenReturn("   "); // 空输出→回退
         PipelineContext ctx = new PipelineContext("s1", "查订单 12345678");
 
         rewriter.process(ctx);
@@ -59,7 +59,7 @@ class QueryRewriterEnrichmentTest {
 
     @Test
     void rewriteNoPreciseTerms_enrichmentEmpty() {
-        when(llm.decide(anyString())).thenReturn("退款流程说明");
+        when(llm.decide(anyString(), anyString())).thenReturn("退款流程说明");
         PipelineContext ctx = new PipelineContext("s1", "退款");
 
         rewriter.process(ctx);

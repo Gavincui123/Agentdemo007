@@ -54,8 +54,10 @@ class SiliconFlowRerankerTest {
         List<RagFragment> out = r.rerank("退款", List.of(frag("A"), frag("B")));
 
         assertThat(out).extracting(RagFragment::text).containsExactly("B", "A"); // 分高者先行
-        assertThat(out.get(0).score()).isEqualTo(0.9);
-        assertThat(out.get(1).score()).isEqualTo(0.3);
+        // relevance 分字段：检索置信度 score 不被覆写（终闸双判据：被重排的看 relevance）
+        assertThat(out.get(0).relevance()).isEqualTo(0.9);
+        assertThat(out.get(1).relevance()).isEqualTo(0.3);
+        assertThat(out.get(0).score()).isEqualTo(0.0);
         server.verify();
     }
 

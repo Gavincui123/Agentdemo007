@@ -18,8 +18,8 @@ class HybridRetrieverTest {
     @Test
     void sparsePrioritized_denseFillsIn_deduped() {
         Retriever dense = (q, k) -> List.of(
-                new RagFragment("语义近似退款说明", 0.9, "dense"),
-                new RagFragment("共享片段", 0.5, "dense"));
+                new RagFragment("语义近似退款说明", 0.9, "dense", null, null, null, null, null, true),
+                new RagFragment("共享片段", 0.5, "dense", null, null, null, null, null, true));
         Retriever sparse = (q, k) -> List.of(
                 new RagFragment("共享片段", 1.0, "sparse"),
                 new RagFragment("精确词ORD123命中", 0.8, "sparse"));
@@ -27,10 +27,11 @@ class HybridRetrieverTest {
 
         List<RagFragment> out = hybrid.retrieve("退款 ORD123", 5);
 
-        // 稀疏优先：共享片段取 sparse 版（置顶），精确词次之；稠密补齐语义近似片段
+        // 稀疏优先置顶：共享片段排首位（取稠密副本——余弦口径可过置信度终闸），精确词次之；稠密补齐
         assertThat(out).extracting(RagFragment::text)
                 .containsExactly("共享片段", "精确词ORD123命中", "语义近似退款说明");
-        assertThat(out.get(0).source()).isEqualTo("sparse"); // 稀疏版优先
+        assertThat(out.get(0).source()).isEqualTo("dense"); // 同文本双命中保留稠密副本（余弦口径）
+        assertThat(out.get(0).cosineScored()).isTrue();
     }
 
     @Test

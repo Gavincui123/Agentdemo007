@@ -106,4 +106,35 @@ class EvalExecutorTest {
         assertThat(inj001.expected().scenario()).isEqualTo("INJECTION");
         assertThat(inj001.expected().blocked()).isTrue();
     }
+
+    @Test
+    void parseFile_setsSourceFromResolver() {
+        // 2026-09-17 Nacos 动态化：内容来自 EvalContentResolver（Nacos 实时拉取），source 随报告透传
+        EvalExecutor executor = new EvalExecutor(fakeExecutor());
+        String content = "{\"stage\":\"intent\",\"description\":\"Nacos 版黄金集\",\"cases\":[]}";
+        EvalFile file = executor.parseFile("eval/intent.json", content, "nacos");
+
+        assertThat(file.stage()).isEqualTo("intent");
+        assertThat(file.source()).isEqualTo("nacos");
+        assertThat(file.cases()).isEmpty();
+    }
+
+    @Test
+    void parseFile_invalidContent_throwsIllegalState() {
+        // Nacos 编辑坏 JSON → 解析失败抛 IllegalStateException（控制器逐 stage 降级跳过）
+        EvalExecutor executor = new EvalExecutor(fakeExecutor());
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> executor.parseFile("eval/intent.json", "not json", "nacos"));
+    }
+
+    @Test
+    void runStage_carriesFileSourceIntoReport() {
+        EvalFile file = new EvalFile("intent", "Nacos 版", List.of(passCase("p1", "分析 Q3")), "nacos");
+        EvalExecutor executor = new EvalExecutor(fakeExecutor());
+
+        EvalReport report = executor.run(List.of(file));
+
+        assertThat(report.stages().get(0).source()).isEqualTo("nacos");
+    }
 }

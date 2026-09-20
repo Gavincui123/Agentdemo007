@@ -17,7 +17,7 @@ import { setAdminToken, clearAdminToken, hasAdminToken, getAdminToken } from '..
 const route = useRoute()
 const router = useRouter()
 
-const token = ref('dev-admin-token')
+const token = ref('')
 const submitting = ref(false)
 const authed = ref(false)
 
@@ -41,7 +41,7 @@ function submit(): void {
 function logout(): void {
   clearAdminToken()
   authed.value = false
-  token.value = 'dev-admin-token'
+  token.value = ''
   ElMessage.success('已退出，令牌已清除')
 }
 </script>
@@ -58,7 +58,7 @@ function logout(): void {
       <div class="auth__field">
         <el-input
           v-model="token"
-          placeholder="管理令牌"
+          placeholder="管理令牌（与后端 agentdemo.admin.token 配置一致）"
           class="auth__input"
           show-password
           @keyup.enter="submit"
@@ -71,7 +71,7 @@ function logout(): void {
         <el-button link size="small" type="danger" @click="logout">清除令牌</el-button>
       </div>
 
-      <p class="auth__hint">dev 默认令牌 <code class="mono">dev-admin-token</code>，生产环境以环境变量 ADMIN_TOKEN 注入。</p>
+      <p class="auth__hint">令牌须与后端 <code class="mono">agentdemo.admin.token</code> 配置一致：dev 默认 <code class="mono">dev-admin-token</code>；若经 Nacos / ADMIN_TOKEN 覆盖，以实际生效配置为准。</p>
     </div>
   </div>
 </template>

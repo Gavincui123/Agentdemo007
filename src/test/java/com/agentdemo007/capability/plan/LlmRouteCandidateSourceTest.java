@@ -34,7 +34,7 @@ class LlmRouteCandidateSourceTest {
 
     @Test
     void decide_validJsonDecided_returnsCandidate() {
-        when(llm.decide(anyString())).thenReturn(VALID_JSON);
+        when(llm.decide(anyString(), anyString())).thenReturn(VALID_JSON);
         Optional<RoutePlanCandidate> c = source.decide("route prompt");
         assertThat(c).isPresent();
         assertThat(c.get().intent()).isEqualTo("order_query");
@@ -43,19 +43,19 @@ class LlmRouteCandidateSourceTest {
 
     @Test
     void decide_garbageDecided_returnsEmpty() {
-        when(llm.decide(anyString())).thenReturn("not json at all");
+        when(llm.decide(anyString(), anyString())).thenReturn("not json at all");
         assertThat(source.decide("p")).isEmpty();
     }
 
     @Test
     void decide_nullDecided_returnsEmpty() {
-        when(llm.decide(anyString())).thenReturn(null);
+        when(llm.decide(anyString(), anyString())).thenReturn(null);
         assertThat(source.decide("p")).isEmpty();
     }
 
     @Test
     void decide_llmThrows_returnsEmpty_ruleBackstop() {
-        when(llm.decide(anyString())).thenThrow(new RuntimeException("model down"));
+        when(llm.decide(anyString(), anyString())).thenThrow(new RuntimeException("model down"));
         assertThat(source.decide("p")).isEmpty();
     }
 }

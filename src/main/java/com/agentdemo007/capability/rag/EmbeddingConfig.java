@@ -37,7 +37,7 @@ public class EmbeddingConfig {
         org.springframework.http.client.SimpleClientHttpRequestFactory f =
                 new org.springframework.http.client.SimpleClientHttpRequestFactory();
         f.setConnectTimeout(10_000);
-        f.setReadTimeout(15_000);
+        f.setReadTimeout(8_000); // 2026-09-17 收紧：嵌入单条文本正常亚秒级，快降级 BM25-only（终闸兜底）胜过 15s 挂起
         return new RestTemplate(f);
     }
 

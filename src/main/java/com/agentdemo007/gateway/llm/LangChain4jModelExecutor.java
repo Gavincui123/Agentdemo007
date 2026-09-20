@@ -55,21 +55,24 @@ public class LangChain4jModelExecutor implements ModelExecutor {
     private final String apiKey;
     private final Map<String, Object> disableThinkingParams;
     private final Duration timeout;
+    /** 采样温度（provider 配置 {@code temperature}，默认 0.2 准确优先）；null=不设置走 provider 默认。 */
+    private final Double temperature;
     private final HttpClientBuilder httpClientBuilder;
 
     /** 生产构造器：httpClientBuilder=null → OpenAiChatModel 默认 JDK 客户端（真打 SF）。 */
     public LangChain4jModelExecutor(String baseUrl, String apiKey, Map<String, Object> disableThinkingParams,
-                                   Duration timeout) {
-        this(baseUrl, apiKey, disableThinkingParams, timeout, null);
+                                   Duration timeout, Double temperature) {
+        this(baseUrl, apiKey, disableThinkingParams, timeout, temperature, null);
     }
 
     /** 测试/生产构造器：httpClientBuilder 非空 → 注入（假 transport 测试 / 自定义 transport）。 */
     public LangChain4jModelExecutor(String baseUrl, String apiKey, Map<String, Object> disableThinkingParams,
-                                   Duration timeout, HttpClientBuilder httpClientBuilder) {
+                                   Duration timeout, Double temperature, HttpClientBuilder httpClientBuilder) {
         this.baseUrl = baseUrl;
         this.apiKey = apiKey;
         this.disableThinkingParams = disableThinkingParams == null ? Map.of() : disableThinkingParams;
         this.timeout = timeout;
+        this.temperature = temperature;
         this.httpClientBuilder = httpClientBuilder;
     }
 
@@ -91,6 +94,9 @@ public class LangChain4jModelExecutor implements ModelExecutor {
                 .maxRetries(0);
         if (request.maxTokens() > 0) {
             b.maxTokens(request.maxTokens());
+        }
+        if (temperature != null) {
+            b.temperature(temperature); // 采样温度（provider 配置，默认 0.2 准确优先）
         }
         // 关思考：disableThinking=true 且 provider 配了关思考参数 → customParameters 注入（SF enable_thinking=false 等）。
         // disableThinking=false 不注入——避免对不支持该参数的 provider 报 400（SF 非推理模型 400 code=20015）。
@@ -172,6 +178,9 @@ public class LangChain4jModelExecutor implements ModelExecutor {
                 .modelName(request.modelId());
         if (request.maxTokens() > 0) {
             paramsB.maxOutputTokens(request.maxTokens());
+        }
+        if (temperature != null) {
+            paramsB.temperature(temperature); // 流式与阻塞同口径（provider 配置，默认 0.2）
         }
         if (request.disableThinking() && !disableThinkingParams.isEmpty()) {
             paramsB.customParameters(disableThinkingParams);

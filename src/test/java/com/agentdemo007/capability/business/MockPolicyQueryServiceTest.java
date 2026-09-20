@@ -10,7 +10,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>3 个政策 @Tool + DAG query_policy 节点均委托此 seam；mock 实现按 domain 返 canned 政策文本+citation。
  * 后期换 {@code RagPolicyQueryService}（委托 HybridRetriever）不换 seam/调用方/工具 schema——单点切真 RAG。
  *
- * <p>覆盖：每个 domain 返非空 text+source 且可区分；null domain 幂等返兜底不抛（②每步降级，不阻塞）。
+ * <p>覆盖：每个 domain 返非空 text+source 且可区分；null domain 幂等返兜底不抛（②每步降级，不阻塞）；
+ * query 检索词在 mock 语义下不改变 canned 输出（真库实现按它检索）。
  */
 class MockPolicyQueryServiceTest {
 
@@ -18,7 +19,7 @@ class MockPolicyQueryServiceTest {
 
     @Test
     void queryReturn_returnPolicyTextAndCitation() {
-        PolicyFragment fragment = service.query(PolicyDomain.RETURN);
+        PolicyFragment fragment = service.query(PolicyDomain.RETURN, "退货政策是什么");
 
         assertThat(fragment).isNotNull();
         assertThat(fragment.text()).isNotBlank();
@@ -29,7 +30,7 @@ class MockPolicyQueryServiceTest {
 
     @Test
     void queryRefund_refundPolicyTextAndCitation() {
-        PolicyFragment fragment = service.query(PolicyDomain.REFUND);
+        PolicyFragment fragment = service.query(PolicyDomain.REFUND, "退款多久到账");
 
         assertThat(fragment).isNotNull();
         assertThat(fragment.text()).isNotBlank();
@@ -39,7 +40,7 @@ class MockPolicyQueryServiceTest {
 
     @Test
     void queryPromotion_promotionPolicyTextAndCitation() {
-        PolicyFragment fragment = service.query(PolicyDomain.PROMOTION);
+        PolicyFragment fragment = service.query(PolicyDomain.PROMOTION, "会员有什么活动");
 
         assertThat(fragment).isNotNull();
         assertThat(fragment.text()).isNotBlank();
@@ -49,17 +50,17 @@ class MockPolicyQueryServiceTest {
 
     @Test
     void queryNull_fallbackNoThrow() {
-        // null domain 幂等兜底（不抛异常，不阻塞主链路，②每步降级）
-        PolicyFragment fragment = service.query(null);
+        // null domain 幂等兜底（不抛异常，不阻塞主链路，②每步降级）；query null 同样安全
+        PolicyFragment fragment = service.query(null, null);
 
         assertThat(fragment).isNotNull();
     }
 
     @Test
     void queryEachDomain_distinctSources() {
-        String returnSrc = service.query(PolicyDomain.RETURN).source();
-        String refundSrc = service.query(PolicyDomain.REFUND).source();
-        String promoSrc = service.query(PolicyDomain.PROMOTION).source();
+        String returnSrc = service.query(PolicyDomain.RETURN, "q").source();
+        String refundSrc = service.query(PolicyDomain.REFUND, "q").source();
+        String promoSrc = service.query(PolicyDomain.PROMOTION, "q").source();
 
         assertThat(returnSrc).isNotEqualTo(refundSrc);
         assertThat(returnSrc).isNotEqualTo(promoSrc);

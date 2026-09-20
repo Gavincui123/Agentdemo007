@@ -1,6 +1,7 @@
 package com.agentdemo007.capability.tool;
 
 import com.agentdemo007.capability.business.ProductQueryService;
+import com.agentdemo007.capability.business.ProductRecord;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
@@ -23,19 +24,36 @@ public class ProductQueryTool {
         this.productService = productService;
     }
 
-    @Tool("按商品SKU查询单个商品详情，或查询全部可售商品（SKU 为空时返回可售列表）")
+    /**
+     * 2026-09-17 定案：推荐/查询类问题必须传关键词做相关性过滤（实测「耳机推荐」因全量倾倒
+     * 目录连不相关手机壳一起推）；仅 SKU 与关键词<b>都</b>缺失才返回全量列表（如「有什么商品」）。
+     * 无匹配如实返回，不回退全量（防模型拿不相关商品凑数）。
+     */
+    @Tool("按商品SKU查询单个商品详情；或按关键词查询可售商品（如：耳机、手机壳、配件——只返回与用户问题相关的商品）；SKU与关键词都留空时才返回全部可售商品")
     @ToolChannel(ToolCategory.RUNTIME)
-    public String queryProduct(@P("商品SKU（例如 SKU-001）；留空则返回可售商品列表") String sku) {
-        if (sku == null || sku.isBlank()) {
-            List<String> lines = productService.availableProducts().stream()
+    public String queryProduct(@P("商品SKU（例如 SKU-001）") String sku,
+                               @P("商品名/标签关键词（例如：耳机、手机壳）；用户问推荐或查询某类商品时必填，仅在问全部商品时留空") String keyword) {
+        if (sku != null && !sku.isBlank()) {
+            return productService.findBySku(sku)
                     .map(p -> "商品 " + p.sku() + "：" + p.name() + "，价格 " + p.price()
                             + "，库存 " + p.stock() + "，标签" + p.tags())
-                    .collect(Collectors.toList());
-            return lines.isEmpty() ? "当前无可售商品" : "可售商品：\n" + String.join("\n", lines);
+                    .orElse("商品 " + sku + " 不存在");
         }
-        return productService.findBySku(sku)
+        if (keyword != null && !keyword.isBlank()) {
+            List<ProductRecord> matches = productService.searchAvailable(keyword);
+            if (matches.isEmpty()) {
+                return "无可售商品匹配「" + keyword.trim() + "」";
+            }
+            return "可售商品：\n" + String.join("\n", productLines(matches));
+        }
+        List<String> lines = productLines(productService.availableProducts());
+        return lines.isEmpty() ? "当前无可售商品" : "可售商品：\n" + String.join("\n", lines);
+    }
+
+    private static List<String> productLines(List<ProductRecord> products) {
+        return products.stream()
                 .map(p -> "商品 " + p.sku() + "：" + p.name() + "，价格 " + p.price()
                         + "，库存 " + p.stock() + "，标签" + p.tags())
-                .orElse("商品 " + sku + " 不存在");
+                .collect(Collectors.toList());
     }
 }

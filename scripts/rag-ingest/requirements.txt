@@ -1,0 +1,16 @@
+# 多格式文档清洗-切分-入库流水线依赖（Python >= 3.10）
+# 基础（必装）
+openai>=1.40          # 嵌入 API（OpenAI 兼容端点：SiliconFlow Qwen3-Embedding-8B）
+numpy>=1.26           # 余弦相似度（semantic 切分）
+chromadb>=1.0         # 向量库 A：Chroma（与服务端 chromadb/chroma:1.0.8 匹配的 v2 API 客户端）
+pymilvus>=2.4         # 向量库 B：Milvus（standalone 端口 19530）
+Pillow>=10.0          # 图片读取 / 样例生成
+beautifulsoup4>=4.12  # HTML 解析
+# 分型 reader（用到哪个装哪个；缺依赖时脚本会给出友好提示并跳过该类型）
+python-docx>=1.1      # Word（.docx）：段落+表格按文档顺序遍历
+PyMuPDF>=1.24         # PDF 文本型：版面块 + 字号识别标题；样例 PDF 生成
+pdfplumber>=0.11      # PDF 表格抽取
+openpyxl>=3.1         # Excel（.xlsx/.xls）
+# 可选：扫描件 / 纯图片 OCR（未安装时扫描页与图片降级为占位块，不报错）
+# paddleocr>=2.7
+# paddlepaddle>=2.6

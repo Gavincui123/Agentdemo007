@@ -192,8 +192,8 @@ onMounted(() => {
         <div v-if="ticketsError" class="admin__err degradation-note">{{ ticketsError }}</div>
         <div v-else-if="ticketsLoading" class="admin__loading">加载工单…</div>
         <div v-else-if="tickets.length === 0" class="admin__empty">
-          <div class="admin__empty-title">没有待审批的工单</div>
-          <div class="admin__empty-sub">高风险操作触发人工审批时，工单会出现在这里</div>
+          <div class="admin__empty-title">暂无工单</div>
+          <div class="admin__empty-sub">高风险操作触发人工审批时，工单会出现在这里；已决议的工单带状态徽章留痕，不会消失</div>
         </div>
         <div v-else class="admin__tickets">
           <div v-for="t in tickets" :key="t.id" class="ticket surface">

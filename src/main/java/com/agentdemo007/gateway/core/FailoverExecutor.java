@@ -88,28 +88,32 @@ public class FailoverExecutor {
                         retryPolicy);
                 long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
                 metrics.recordModelCall(millis, true);
-                // [[q2-llm-egress-timing]] 日志埋点：人读日志打一行（modelId + 耗时 + 成败 + attempt），
-                // 供 tail 日志按调用定位各段延迟。millis 与 metrics.recordModelCall 同源（含同模型退避睡眠，
-                // 单 HTTP 调用场景即该调用墙钟）。覆盖全部 LLM 出站（chat/chatRaw/decide + 工具派发经
-                // GatewayChatModel.doChat→gateway.invoke→本方法），一处收口不散落。
-                log.info("LLM出站 model={} durMs={} ok=true attempt={}/{}", modelId, millis, attempt + 1, maxAttempts);
+                // [[q2-llm-egress-timing]] 日志埋点：人读日志打一行（scene + modelId + 耗时 + 成败 + attempt），
+                // 供 tail 日志按调用定位各段延迟与用途归属（scene=查询改写/意图识别/路由计划/会话摘要/
+                // 回答生成/工具调用——同轮多次小模型出站据此可辨，不再同形不可分）。millis 与
+                // metrics.recordModelCall 同源（含同模型退避睡眠，单 HTTP 调用场景即该调用墙钟）。
+                // 覆盖全部 LLM 出站（chat/chatRaw/decide + 工具派发经 GatewayChatModel.doChat→
+                // gateway.invoke→本方法），一处收口不散落。
+                log.info("LLM出站 scene={} model={} durMs={} ok=true attempt={}/{}",
+                        request.sceneOrDefault(), modelId, millis, attempt + 1, maxAttempts);
                 if (attempt > 0) {
-                    log.warn("故障转移成功：主={} 备选={} 尝试={}", request.primaryModelId(), modelId, attempt + 1);
+                    log.warn("故障转移成功：scene={} 主={} 备选={} 尝试={}",
+                            request.sceneOrDefault(), request.primaryModelId(), modelId, attempt + 1);
                     metrics.recordFailover(false); // 成功转移（非候选耗尽）
                 }
                 return response;
             } catch (RuntimeException e) {
                 long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
                 metrics.recordModelCall(millis, false);
-                log.info("LLM出站 model={} durMs={} ok=false attempt={}/{} reason={}",
-                        modelId, millis, attempt + 1, maxAttempts, e.getMessage());
+                log.info("LLM出站 scene={} model={} durMs={} ok=false attempt={}/{} reason={}",
+                        request.sceneOrDefault(), modelId, millis, attempt + 1, maxAttempts, e.getMessage());
                 Decision d = triage.triage(e).decision();
                 if (d == Decision.AUDIT_AND_FAIL || d == Decision.FEEDBACK_TO_LLM) {
                     throw e; // 致命/工具错：不故障转移，向上传播
                 }
                 lastCause = e;
-                log.warn("模型执行失败，尝试备选：model={} attempt={}/{} reason={}",
-                        modelId, attempt + 1, maxAttempts, e.getMessage());
+                log.warn("模型执行失败，尝试备选：scene={} model={} attempt={}/{} reason={}",
+                        request.sceneOrDefault(), modelId, attempt + 1, maxAttempts, e.getMessage());
             }
         }
         metrics.recordFailover(true); // 全候选耗尽

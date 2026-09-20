@@ -17,17 +17,17 @@ import com.agentdemo007.capability.tool.OrderQueryTool;
 import com.agentdemo007.capability.tool.ProductQueryTool;
 import com.agentdemo007.capability.tool.PromotionPolicyTool;
 import com.agentdemo007.capability.tool.RefundPolicyTool;
+import com.agentdemo007.capability.tool.ResilientToolExecutor;
 import com.agentdemo007.capability.tool.ReturnPolicyTool;
 import com.agentdemo007.capability.tool.ToolCallResult;
 import com.agentdemo007.capability.tool.ToolCategory;
 import com.agentdemo007.capability.tool.ToolSchemaProvider;
 import com.agentdemo007.capability.tool.UserQueryTool;
-import com.agentdemo007.capability.workflow.AfterSaleSubmitService;
 import com.agentdemo007.capability.workflow.AfterSaleWorkflowGraph;
 import com.agentdemo007.capability.workflow.AfterSaleWorkflowOutcome;
 import com.agentdemo007.capability.workflow.Reason;
-import com.agentdemo007.capability.workflow.RefundValidationRule;
-import com.agentdemo007.capability.workflow.WorkflowApprovalDecision;
+import com.agentdemo007.capability.workflow.AfterSaleEligibilityJudge;
+import com.agentdemo007.capability.workflow.WorkflowApprovalSubmitter;
 import com.agentdemo007.common.pipeline.PipelineContext;
 import com.agentdemo007.resilience.ToolCircuitBreaker;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -158,17 +158,17 @@ class BusinessToolsSiliconFlowSmokeTest {
                 .build();
         ChatResponse resp = model.doChat(req);
         List<ToolExecutionRequest> calls = resp.aiMessage().toolExecutionRequests();
-        Map<String, ToolExecutor> executors = schemas.executors(breaker());
+        Map<String, ResilientToolExecutor> executors = schemas.executors(breaker());
         Map<String, ToolCategory> cats = schemas.categoryMap();
         List<ToolCallResult> results = new ArrayList<>();
         if (calls != null) {
             for (ToolExecutionRequest call : calls) {
-                ToolExecutor exec = executors.get(call.name());
+                ResilientToolExecutor exec = executors.get(call.name());
                 if (exec == null) {
                     continue; // 模型幻觉工具名：跳过（同 ToolCallExecutor 降级）
                 }
-                String content = exec.execute(call, null); // 真 DefaultToolExecutor 反射调真 @Tool
-                results.add(new ToolCallResult(call.name(), content, cats.getOrDefault(call.name(), ToolCategory.COMPUTE)));
+                results.add(new ToolCallResult(call.name(), exec.invoke(call).content(),
+                        cats.getOrDefault(call.name(), ToolCategory.COMPUTE)));
             }
         }
         return results;
@@ -285,9 +285,9 @@ class BusinessToolsSiliconFlowSmokeTest {
         AfterSaleWorkflowGraph refundGraph = new AfterSaleWorkflowGraph(
                 new UserQueryService(), new OrderQueryService(), new MockPolicyQueryService(),
                 PolicyDomain.REFUND,
-                new RefundValidationRule(Clock.fixed(Instant.parse("2026-09-12T00:00:00Z"), ZoneOffset.UTC)),
-                (AfterSaleSubmitService) ctx -> "WF-SMOKE",
-                (WorkflowApprovalDecision) wr -> new WorkflowApprovalDecision.Approved("auto"),
+                (AfterSaleEligibilityJudge) input -> new AfterSaleEligibilityJudge.Verdict(
+                        AfterSaleEligibilityJudge.Decision.ELIGIBLE, "机械校验桩（冒烟只验归属驳回）", null),
+                (WorkflowApprovalSubmitter) req -> new WorkflowApprovalSubmitter.Outcome("TK-SMOKE", false),
                 "10086");
         AfterSaleWorkflowOutcome outcome = refundGraph.invoke(new PipelineContext("smoke", "退款 ORD-003"));
         assertThat(outcome).isInstanceOf(AfterSaleWorkflowOutcome.Rejected.class);

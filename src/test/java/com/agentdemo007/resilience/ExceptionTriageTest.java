@@ -82,4 +82,39 @@ class ExceptionTriageTest {
         assertThat(r.category()).isEqualTo(ExceptionCategory.RETRYABLE_TRANSIENT);
         assertThat(r.decision()).isEqualTo(Decision.RETRY);
     }
+
+    // ---- 工具异常分诊（Phase 9 工具韧性·2026-09-17 扩展）----
+
+    @Test
+    void toolHttp5xx_isRetryable() {
+        assertThat(triage.triage(new ToolHttpException(500, "订单系统内部错误")).category())
+                .isEqualTo(ExceptionCategory.RETRYABLE_TRANSIENT);
+        assertThat(triage.triage(new ToolHttpException(503, "服务不可用")).decision())
+                .isEqualTo(Decision.RETRY);
+    }
+
+    @Test
+    void toolHttp408And429_areRetryable() {
+        assertThat(triage.triage(new ToolHttpException(408, "请求超时")).category())
+                .isEqualTo(ExceptionCategory.RETRYABLE_TRANSIENT);
+        assertThat(triage.triage(new ToolHttpException(429, "外部系统限流")).category())
+                .isEqualTo(ExceptionCategory.RETRYABLE_TRANSIENT);
+    }
+
+    @Test
+    void toolHttp4xx_failsImmediately() {
+        // 4xx 明确拒绝（鉴权/参数/不存在）：重试同参数无意义 → 交错误回喂 LLM
+        TriageResult r = triage.triage(new ToolHttpException(400, "订单号不存在"));
+
+        assertThat(r.category()).isEqualTo(ExceptionCategory.NON_RETRYABLE_CLIENT);
+        assertThat(r.decision()).isEqualTo(Decision.FAIL);
+    }
+
+    @Test
+    void toolTimeout_isRetryable() {
+        TriageResult r = triage.triage(new ToolTimeoutException("工具执行超时（10000ms）"));
+
+        assertThat(r.category()).isEqualTo(ExceptionCategory.RETRYABLE_TRANSIENT);
+        assertThat(r.decision()).isEqualTo(Decision.RETRY);
+    }
 }

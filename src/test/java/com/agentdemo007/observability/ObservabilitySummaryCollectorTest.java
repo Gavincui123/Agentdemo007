@@ -87,4 +87,18 @@ class ObservabilitySummaryCollectorTest {
         assertThat(s.hitlPendingTickets()).isZero();
         assertThat(s.totalTurns()).isZero();
     }
+
+    @Test
+    void summary_structuralSourceFailure_degradesToZero_notThrow() {
+        // 2026-09-17 回归钉：MySQL 抖动（与 Redis/Nacos/Chroma 同主机）曾令整个 /api/obs/summary
+        // 500，前端只显示错误横幅——结构性读数异常须降级为 0，Micrometer 部分照常返回。
+        when(turnRepository.count()).thenThrow(new RuntimeException("db down"));
+        when(turnRepository.countByDegradedTrue()).thenThrow(new RuntimeException("db down"));
+
+        ObservabilitySummary s = collector.summary();
+
+        assertThat(s.totalTurns()).isZero();
+        assertThat(s.degradedTurns()).isZero();
+        assertThat(s.chatRequests()).isZero(); // 进程内计数器部分不受影响
+    }
 }

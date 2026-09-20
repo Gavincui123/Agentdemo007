@@ -118,7 +118,7 @@ class LangChain4jModelExecutorTest {
         LangChain4jModelExecutor exec = new LangChain4jModelExecutor(
                 "https://api.siliconflow.cn/v1", "dummy-key", // 假 transport 不校验 key
                 Map.of("enable_thinking", false), // SF 关思考参数
-                Duration.ofSeconds(60),
+                Duration.ofSeconds(60), null,
                 new CapturingHttpClientBuilder(client)); // 假 transport——无网络
 
         LlmResponse resp = exec.execute(new LlmRequest("Qwen/Qwen3-14B", "你好", 512, true)); // disableThinking=true
@@ -145,7 +145,7 @@ class LangChain4jModelExecutorTest {
         LangChain4jModelExecutor exec = new LangChain4jModelExecutor(
                 "https://api.siliconflow.cn/v1", "dummy-key",
                 Map.of("enable_thinking", false),
-                Duration.ofSeconds(60),
+                Duration.ofSeconds(60), null,
                 new CapturingHttpClientBuilder(client));
 
         exec.execute(new LlmRequest("Qwen/Qwen3-14B", "你好", 512, false)); // disableThinking=false
@@ -154,6 +154,37 @@ class LangChain4jModelExecutorTest {
         assertThat(client.capturedBody).isNotBlank();
         // 不注入关思考参数——避免对不支持该参数的 provider 报 400（SF 非推理模型 400 code=20015）
         assertThat(client.capturedBody).doesNotContain("enable_thinking");
+    }
+
+    @Test
+    void execute_temperatureConfigured_serializedIntoBody() {
+        CapturingHttpClient client = new CapturingHttpClient(HELLO_JSON);
+        LangChain4jModelExecutor exec = new LangChain4jModelExecutor(
+                "https://api.siliconflow.cn/v1", "dummy-key",
+                Map.of("enable_thinking", false),
+                Duration.ofSeconds(60), 0.2D,
+                new CapturingHttpClientBuilder(client));
+
+        exec.execute(new LlmRequest("Qwen/Qwen3-14B", "你好", 512, false));
+
+        // 采样温度透传（2026-09-17 定案：provider 配置 temperature，默认 0.2 准确优先）
+        assertThat(client.capturedBody).contains("temperature");
+        assertThat(client.capturedBody).contains("0.2");
+    }
+
+    @Test
+    void execute_temperatureNull_notSerialized_providerDefaultApplies() {
+        CapturingHttpClient client = new CapturingHttpClient(HELLO_JSON);
+        LangChain4jModelExecutor exec = new LangChain4jModelExecutor(
+                "https://api.siliconflow.cn/v1", "dummy-key",
+                Map.of("enable_thinking", false),
+                Duration.ofSeconds(60), null,
+                new CapturingHttpClientBuilder(client));
+
+        exec.execute(new LlmRequest("Qwen/Qwen3-14B", "你好", 512, false));
+
+        // 未配置温度 → 请求体不带 temperature 字段（走模型 provider 默认）
+        assertThat(client.capturedBody).doesNotContain("temperature");
     }
 
     @Test
@@ -174,7 +205,7 @@ class LangChain4jModelExecutorTest {
         LangChain4jModelExecutor exec = new LangChain4jModelExecutor(
                 "https://api.siliconflow.cn/v1", "dummy-key",
                 Map.of("enable_thinking", false),
-                Duration.ofSeconds(60),
+                Duration.ofSeconds(60), null,
                 new CapturingHttpClientBuilder(client));
 
         // 空 content = 模型失败（推理模型预算耗尽 content 空）——不外泄思考过程，抛 LlmUnavailableException
@@ -195,7 +226,7 @@ class LangChain4jModelExecutorTest {
         LangChain4jModelExecutor exec = new LangChain4jModelExecutor(
                 "https://api.siliconflow.cn/v1", "dummy-key",
                 Map.of("enable_thinking", false),
-                Duration.ofSeconds(60),
+                Duration.ofSeconds(60), null,
                 new CapturingHttpClientBuilder(client));
 
         java.lang.reflect.Method method = com.agentdemo007.capability.tool.TriangleAreaTool.class

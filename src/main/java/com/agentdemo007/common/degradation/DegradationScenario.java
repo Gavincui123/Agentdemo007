@@ -17,6 +17,7 @@ public enum DegradationScenario {
     TOOL_FAILURE("该操作暂时无法完成，请稍后重试。"),
     RAG_SKIP("暂未检索到相关资料，我基于已有信息为您答复。"),
     HITL_TIMEOUT("您的请求需要人工确认，已为您转接，请耐心等待。"),
+    // 提交制（2026-09-20）后工作流步不再产出本场景（审批是事件，无请求内等待/超时）；常量保留作对外指标兼容
     WORKFLOW_APPROVAL_TIMEOUT("您的退款请求已提交，正在等待人工审批，请留意后续通知。"),
     OUTPUT_FALLBACK("该请求的结构化输出暂时不可用，请稍后重试。"),
     PIPELINE_TIMEOUT("当前处理时间较长，请稍后重试。"),

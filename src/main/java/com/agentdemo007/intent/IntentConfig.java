@@ -53,13 +53,14 @@ public class IntentConfig {
         putBuiltin(builtins, "闲聊", Intent.CHIT_CHAT, 0.9);
         putBuiltin(builtins, "你好", Intent.CHIT_CHAT, 0.85);
         // 业务查询关键词 → CHIT_CHAT（小模型快回复）：工具/RAG 已取数据，小模型足够格式化回复；
-        // 不升 REASONING（大模型 35s 延迟）。退款/退货走工作流时 presetReply 短路不调 LLM，
-        // 认知意图仅决定非工作流路径（如"退款政策是什么"）的模型。
+        // 不升 REASONING（大模型 35s 延迟）。仅 LOW 风险业务词走此快路径（风险分层，[[routeplan-design]]）。
+        // 退款/退货属高风险操作（refund_request/return_request 基线 HIGH+WORKFLOW_FIRST），已从词表移除：
+        // 词表 contains 匹配无法区分「我要退款」（请求/HIGH）与「退款政策是什么」（咨询/faq_query/LOW），
+        // 判断交给 LLM 理解层（改写→意图→route_model）→ risk_floor/workflow_boundary 收敛生效；
+        // route_model 不可用时按 fallbackIntent/general_chat 基线兜底（原有降级策略不变）。
         putBuiltin(builtins, "订单", Intent.CHIT_CHAT, 0.8);
         putBuiltin(builtins, "物流", Intent.CHIT_CHAT, 0.8);
         putBuiltin(builtins, "商品", Intent.CHIT_CHAT, 0.75);
-        putBuiltin(builtins, "退款", Intent.CHIT_CHAT, 0.75);
-        putBuiltin(builtins, "退货", Intent.CHIT_CHAT, 0.75);
         putBuiltin(builtins, "优惠", Intent.CHIT_CHAT, 0.75);
         putBuiltin(builtins, "促销", Intent.CHIT_CHAT, 0.75);
         putBuiltin(builtins, "分析", Intent.REASONING, 0.9);
@@ -72,13 +73,22 @@ public class IntentConfig {
         putBuiltin(builtins, "转人工", Intent.TRANSFER_TO_HUMAN, 0.95);
         putBuiltin(builtins, "人工客服", Intent.TRANSFER_TO_HUMAN, 0.95);
 
-        // 2. 配置关键词合并：同字覆盖（改意图/置信度），新增追加
+        // 2. 配置关键词合并：同字覆盖（改意图/置信度），新增追加。
+        // 高风险词护栏（类级防御，2026-09-17 定案）：退款/退货不得被词表直判 CHIT_CHAT——
+        // 词表 contains 无法区分「我要退款」（请求/HIGH）与「退款政策是什么」（咨询/faq/LOW），
+        // 且表在多处（内置/本地 yml/Nacos 热更），逐处打补丁必然"改了又错、改不完整"；
+        // 故在唯一合并点拒绝装配并 WARN，判断一律交 LLM 理解层 + route_model 风险收敛
+        // （route_model 不可用时 fallbackIntent/general_chat 兜底不变）。
         String source = "内置默认";
         List<IntentKeywordProperties.RuleDef> cfg = props.getRules();
         if (cfg != null && !cfg.isEmpty()) {
             source = "内置+配置合并";
             for (IntentKeywordProperties.RuleDef r : cfg) {
                 if (r.getKeyword() == null || r.getKeyword().isBlank() || r.getIntent() == null) {
+                    continue;
+                }
+                if (r.getIntent() == Intent.CHIT_CHAT && isHighRiskWord(r.getKeyword())) {
+                    log.warn("配置关键词「{}」→CHIT_CHAT 命中高风险词护栏，拒绝装配（判断交 route_model）", r.getKeyword());
                     continue;
                 }
                 builtins.put(r.getKeyword().toLowerCase(java.util.Locale.ROOT),
@@ -101,6 +111,15 @@ public class IntentConfig {
                                    String keyword, Intent intent, double confidence) {
         map.put(keyword.toLowerCase(java.util.Locale.ROOT),
                 new KeywordRule(keyword, intent, confidence));
+    }
+
+    /** 高风险词表（对应 RoutePlanBaselines HIGH 基线：refund_request/return_request）。新增高风险意图时同步扩。 */
+    private static final List<String> HIGH_RISK_WORDS = List.of("退款", "退货");
+
+    /** 关键词是否命中高风险词表（contains 语义，与 KeywordRule 匹配口径一致：防「无理由退货」等变体绕过）。 */
+    private static boolean isHighRiskWord(String keyword) {
+        String k = keyword.toLowerCase(java.util.Locale.ROOT);
+        return HIGH_RISK_WORDS.stream().anyMatch(k::contains);
     }
 
     @Bean

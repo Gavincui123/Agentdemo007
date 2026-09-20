@@ -35,7 +35,8 @@ class RagStepTest {
     private final HashEmbeddingService embedding = new HashEmbeddingService();
 
     private static RagFragment frag(String text) {
-        return new RagFragment(text, 0.0, "test");
+        // mock 检索器直产片段：余弦口径（store 实检由 InMemoryVectorStore.search 重建同口径）
+        return new RagFragment(text, 0.9, "test", null, null, null, null, null, true);
     }
 
     private RagStep newStep(InMemoryVectorStore store, double minScore, int minCount, int topK) {
@@ -44,7 +45,7 @@ class RagStepTest {
                 new RetrievalValidator(minScore, minCount),
                 new Bm25Reranker(),
                 new RagInjectionScanner(),
-                topK);
+                topK, 10, 0.2);
     }
 
     @Test
@@ -139,7 +140,7 @@ class RagStepTest {
                 new RetrievalValidator(0.3, 1),
                 new Bm25Reranker(),
                 new RagInjectionScanner(),
-                5);
+                5, 10, 0.2);
 
         PipelineContext ctx = new PipelineContext("s6", "退款");
         StepOutcome out = step.process(ctx);
@@ -157,9 +158,9 @@ class RagStepTest {
         InMemoryVectorStore hitStore = new InMemoryVectorStore(embedding);
         hitStore.index(List.of(frag("退款流程说明")));
         RagStep hitStep = new RagStep(new VectorRetriever(embedding, hitStore),
-                new RetrievalValidator(0.3, 1), new Bm25Reranker(), new RagInjectionScanner(), 5, metrics);
+                new RetrievalValidator(0.3, 1), new Bm25Reranker(), new RagInjectionScanner(), 5, 10, 0.2, metrics);
         RagStep skipStep = new RagStep(new VectorRetriever(embedding, new InMemoryVectorStore(embedding)),
-                new RetrievalValidator(0.3, 1), new Bm25Reranker(), new RagInjectionScanner(), 5, metrics);
+                new RetrievalValidator(0.3, 1), new Bm25Reranker(), new RagInjectionScanner(), 5, 10, 0.2, metrics);
 
         hitStep.process(new PipelineContext("h", "退款"));
         skipStep.process(new PipelineContext("s", "退款"));
@@ -210,7 +211,7 @@ class RagStepTest {
                 new RetrievalValidator(0.3, 1),
                 new Bm25Reranker(),
                 new RagInjectionScanner(),
-                5);
+                5, 10, 0.2);
         PipelineContext ctx = new PipelineContext("s1", "你好");
         ctx.setIntent(Intent.CHIT_CHAT);
 
@@ -280,7 +281,7 @@ class RagStepTest {
 
     @Test
     void routePlanDeterministicFallback_chitChat_skipsViaOldIntentLogic() {
-        // source=DETERMINISTIC_FALLBACK → 不采信 routePlan（兜底候选），回退现有 Intent 逻辑
+        // source=DETERMINISTIC_FALLBACK + needsRag=true → 兜底候选"要 RAG"不采信，回退旧意图逻辑
         Retriever retriever = mock(Retriever.class);
         RagStep step = ragStepWith(retriever);
         PipelineContext ctx = new PipelineContext("rp3", "你好");
@@ -295,25 +296,26 @@ class RagStepTest {
     }
 
     @Test
-    void routePlanDeterministicFallback_nonChitChat_runsRagViaOldIntentLogic() {
-        // fallback→不采信 routePlan.needsRag=false；旧逻辑：非闲聊→跑 RAG
+    void routePlanContract_needsRagFalse_obeyedForAllSources_includingFallback() {
+        // 2026-09-18 routePlan 契约升级：needsRag=false 对所有 source 生效（含 DETERMINISTIC_FALLBACK）
+        // ——收敛层为售后澄清/衔接/确认终态产出的"无需 RAG"是确定性决策，下游恒服从
         Retriever retriever = mock(Retriever.class);
-        when(retriever.retrieve(anyString(), anyInt())).thenReturn(List.of(frag("退款说明")));
         RagStep step = ragStepWith(retriever);
         PipelineContext ctx = new PipelineContext("rp4", "退款");
         ctx.setIntent(Intent.OTHER);
         ctx.setRoutePlan(routePlan(false, RoutePlan.Source.DETERMINISTIC_FALLBACK));
 
-        step.process(ctx);
+        StepOutcome out = step.process(ctx);
 
-        verify(retriever).retrieve(anyString(), anyInt());
+        assertThat(out).isInstanceOf(StepOutcome.Proceed.class);
+        verifyNoInteractions(retriever); // 契约：无需 RAG（此前 FALLBACK 不采信会白跑漏斗）
     }
 
     // ---- helpers（#135 routePlan source 门控测试）----
 
     private RagStep ragStepWith(Retriever retriever) {
         return new RagStep(retriever,
-                new RetrievalValidator(0.0, 1), new Bm25Reranker(), new RagInjectionScanner(), 5);
+                new RetrievalValidator(0.0, 1), new Bm25Reranker(), new RagInjectionScanner(), 5, 10, 0.2);
     }
 
     private static RoutePlan routePlan(boolean needsRag, RoutePlan.Source source) {

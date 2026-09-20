@@ -22,8 +22,9 @@ import java.util.Set;
  * <p>每 provider 一个实例（由 {@code RerankerConfig} 按 {@code reranker.providers[*]} 注入
  * baseUrl/apiKey/model），POST {@code {base-url}/rerank}，请求体
  * {@code {model, query, documents:[候选文本...], top_n, return_documents:false}}（官方契约），
- * 解析 {@code results[].index + relevance_score}，按相关性降序重排候选（保留 source/temporal 字段，
- * 仅更新 score + 顺序）。响应已按相关性排序，本类仍防御性排序。
+ * 解析 {@code results[].index + relevance_score}，按相关性降序重排候选（保留 source/temporal/domain
+ * 字段与检索置信度 score，仅写 {@code relevance} + 顺序——置信度终闸按 relevance 裁决被重排片段）。
+ * 响应已按相关性排序，本类仍防御性排序。
  *
  * <p><b>主备容灾</b>：本类是叶子（单 provider），由 {@code FailoverReranker} 逐 provider 尝试；
  * 主备全失败→降级 {@link Bm25Reranker}（重排只改顺序，降级安全不阻塞、不污染向量空间）。
@@ -107,9 +108,11 @@ public class SiliconFlowReranker implements Reranker {
                 int idx = r.path("index").asInt(-1);
                 if (idx >= 0 && idx < candidates.size() && used.add(idx)) {
                     RagFragment f = candidates.get(idx);
-                    double score = r.path("relevance_score").asDouble(0);
-                    reranked.add(new RagFragment(f.text(), score, f.source(),
-                            f.timestamp(), f.validUntil(), f.temporalTag()));
+                    // 相关度写 relevance（不覆写 score）——检索置信度证据保留，置信度终闸双判据：
+                    // 被重排的看 relevance，未重排/降级重排的看 score（cosine 口径）
+                    reranked.add(new RagFragment(f.text(), f.score(), f.source(),
+                            f.timestamp(), f.validUntil(), f.temporalTag(),
+                            f.domain(), r.path("relevance_score").asDouble(0), f.cosineScored()));
                 }
             }
             // 未返回的候选保留召回序（防御：top_n < candidates.size() 时补齐，不丢候选）

@@ -19,9 +19,10 @@ build/
 .springBeans
 *.launch
 
-# Claude Code / Cursor local config (session/IDE, not project code)
+# Session/IDE agent config (session plans, not project code)
 .claude/
 .cursor/
+.zcode/
 
 # OS
 .DS_Store
@@ -33,10 +34,13 @@ logs/
 # CodeGraph index (regenerable)
 .codegraph/
 
-.dep-map/
 .docs/blog/
 .docs/plans/
 .docs/superpowers/
+
+# RAG ingestion artifacts (regenerable)
+scripts/rag-ingest/embedding-cache.json
+scripts/rag-ingest/samples/
 
 # Spring Boot repackaged backup
 *.original
@@ -44,3 +48,20 @@ logs/
 # Misc
 HELP.md
 
+
+# Lucene BM25 磁盘索引（运行期产物）
+data/
+# java-dependency-reuse 依赖地图（本机产物）
+.dep-map/
+# 根目录 node_modules（vite/vitest 运行缓存；前端依赖在 frontend/node_modules）
+node_modules/
+# Python 字节码缓存
+__pycache__/
+
+
+memory/
+# 真实密钥环境变量（模板 .env.prod.example 可提交，真值不进仓库）
+deploy/.env.prod
+
+# 根目录 npm 误运行产物（前端依赖锁在 frontend/）
+/package-lock.json

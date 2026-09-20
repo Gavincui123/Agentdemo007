@@ -32,7 +32,7 @@ class QueryRewriterTest {
 
     @Test
     void rewrite_success_writesStandardQuery_andProceeds() {
-        when(llm.decide(anyString())).thenReturn("Q3 销售额怎么样");
+        when(llm.decide(anyString(), anyString())).thenReturn("Q3 销售额怎么样");
         PipelineContext ctx = new PipelineContext("s1", "那它呢");
         ctx.setHistory(List.of(new ChatMessage.User("看 Q3 销售"), new ChatMessage.Ai("好的")));
 
@@ -44,7 +44,7 @@ class QueryRewriterTest {
 
     @Test
     void rewrite_llmFailure_fallsBackToRawInput_andProceeds() {
-        when(llm.decide(anyString())).thenThrow(new RuntimeException("model down"));
+        when(llm.decide(anyString(), anyString())).thenThrow(new RuntimeException("model down"));
         PipelineContext ctx = new PipelineContext("s1", "那它呢");
 
         StepOutcome outcome = rewriter.process(ctx);
@@ -55,7 +55,7 @@ class QueryRewriterTest {
 
     @Test
     void rewrite_blankOutput_fallsBackToRawInput_andProceeds() {
-        when(llm.decide(anyString())).thenReturn("   ");
+        when(llm.decide(anyString(), anyString())).thenReturn("   ");
         PipelineContext ctx = new PipelineContext("s1", "它怎么样");
 
         StepOutcome outcome = rewriter.process(ctx);
@@ -65,14 +65,15 @@ class QueryRewriterTest {
     }
 
     @Test
-    void rewrite_firstTurn_noHistory_stillProceeds() {
-        when(llm.decide(anyString())).thenReturn("帮我查 Q3 销售");
+    void rewrite_firstTurn_noHistory_skipsLlm_usesRawInput() {
+        // 空历史（首句/新会话）无指代可消解 → 跳过改写小模型（省 0.8~2.6s 一整轮 LLM，2026-09-18 延迟优化）
         PipelineContext ctx = new PipelineContext("new", "帮我查 Q3 销售");
 
         StepOutcome outcome = rewriter.process(ctx);
 
         assertThat(outcome).isInstanceOf(StepOutcome.Proceed.class);
         assertThat(ctx.standardQuery()).isEqualTo(StandardQuery.of("帮我查 Q3 销售"));
+        org.mockito.Mockito.verifyNoInteractions(llm); // 零 LLM
     }
 
     @Test
