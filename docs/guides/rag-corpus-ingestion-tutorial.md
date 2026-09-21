@@ -1,7 +1,7 @@
 # 客服知识库 RAG 前置：多格式文档「清洗-切分-入库」实战教程
 
-> 配套工具：[scripts/rag-ingest/](../scripts/rag-ingest/)（纯 Python 参考流水线，不依赖 LlamaIndex）
-> 语料位置：[src/main/resources/corpus/](../src/main/resources/corpus/)（小哲电商客服知识库，23 个文件＝20 篇 markdown + 3 个活动规则 JSON，灌库后 156 块）
+> 配套工具：[scripts/rag-ingest/](../../scripts/rag-ingest/)（纯 Python 参考流水线，不依赖 LlamaIndex）
+> 语料位置：[src/main/resources/corpus/](../../src/main/resources/corpus/)（小哲电商客服知识库，23 个文件＝20 篇 markdown + 3 个活动规则 JSON，灌库后 156 块）
 > 目标向量库：Chroma（默认，docker-compose 已含容器）/ Milvus（standalone）
 > 后续衔接：本教程产出的 collection 将作为 Java 侧（Agentdemo007）真实 RAG 检索的数据源
 

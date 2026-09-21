@@ -92,4 +92,60 @@ class LlmSummaryHookTest {
 
         assertThat(hook.summarize(HISTORY, "你好")).isEmpty();
     }
+
+    // ---- Phase 22 T100/T101 滚动摘要契约 ----
+
+    @Test
+    void summarizeRolling_mergesOldSummaryAndSlidOut() {
+        // 增量合并：入参（旧摘要+滑出轮次）→ LLM → 新摘要
+        when(llm.chat(anyString(), eq(Intent.CHIT_CHAT), eq("滚动摘要")))
+                .thenReturn("合并后的滚动摘要");
+        List<ChatMessage> slidOut = List.of(
+                new ChatMessage.User("第一轮 ORD-001"), new ChatMessage.Ai("已发货"));
+
+        Optional<String> summary = hook.summarizeRolling("旧摘要", slidOut);
+
+        assertThat(summary).contains("合并后的滚动摘要");
+        org.mockito.ArgumentCaptor<String> prompt = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.Mockito.verify(llm).chat(prompt.capture(), eq(Intent.CHIT_CHAT), eq("滚动摘要"));
+        assertThat(prompt.getValue()).contains("旧摘要");           // 旧摘要在提示词里（增量合并）
+        assertThat(prompt.getValue()).contains("ORD-001");          // 滑出轮次在提示词里
+        assertThat(prompt.getValue()).contains("200");              // 契约上界进了指令
+    }
+
+    @Test
+    void summarizeRolling_emptySlidOut_returnsEmpty_zeroLlm() {
+        assertThat(hook.summarizeRolling("旧摘要", List.of())).isEmpty();
+        assertThat(hook.summarizeRolling(null, null)).isEmpty();
+    }
+
+    @Test
+    void summarizeRolling_overContractLimit_rejected() {
+        // T101 契约：60 字锚点口径放宽为 ≤200 字——201 字即垃圾（宁缺毋滥，调用方沿用旧摘要）
+        when(llm.chat(anyString(), eq(Intent.CHIT_CHAT), eq("滚动摘要"))).thenReturn("长".repeat(201));
+
+        assertThat(hook.summarizeRolling("旧摘要", HISTORY)).isEmpty();
+    }
+
+    @Test
+    void summarizeRolling_atContractLimit_accepted() {
+        when(llm.chat(anyString(), eq(Intent.CHIT_CHAT), eq("滚动摘要"))).thenReturn("长".repeat(200));
+
+        assertThat(hook.summarizeRolling("旧摘要", HISTORY)).isPresent();
+    }
+
+    @Test
+    void summarizeRolling_braceGarbage_rejected() {
+        // 垃圾守护继承（花括号碎片回显）
+        when(llm.chat(anyString(), eq(Intent.CHIT_CHAT), eq("滚动摘要"))).thenReturn("摘要含碎片 } 回显");
+
+        assertThat(hook.summarizeRolling("旧摘要", HISTORY)).isEmpty();
+    }
+
+    @Test
+    void summarizeRolling_llmFailure_returnsEmpty() {
+        when(llm.chat(anyString(), eq(Intent.CHIT_CHAT), eq("滚动摘要"))).thenThrow(new RuntimeException("down"));
+
+        assertThat(hook.summarizeRolling("旧摘要", HISTORY)).isEmpty(); // 调用方沿用旧摘要
+    }
 }

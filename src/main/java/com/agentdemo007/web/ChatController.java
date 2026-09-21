@@ -9,6 +9,8 @@ import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.common.response.UnifiedResponse;
 import com.agentdemo007.observability.AgentMetrics;
 import com.agentdemo007.persistence.mq.ChatTurnFinalizer;
+import com.agentdemo007.session.MemberLevelService;
+import com.agentdemo007.session.profile.UserProfileService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -75,11 +77,23 @@ public class ChatController {
     private final TaskExecutor sseTaskExecutor;
     private final AgentMetrics metrics;
     private final long sseTimeoutMs;
+    private final MemberLevelService memberLevelService;
+    private final UserProfileService profileService;
 
-    /** 测试便利构造（缺省 SSE 超时 120s + 指标空实现）。 */
+    /** 测试便利构造（缺省 SSE 超时 120s + 指标空实现 + 无画像服务）。 */
     public ChatController(PipelineExecutor pipelineExecutor, ChatTurnFinalizer finalizer,
-                          ObjectMapper objectMapper, TaskExecutor sseTaskExecutor) {
-        this(pipelineExecutor, finalizer, objectMapper, sseTaskExecutor, DEFAULT_SSE_TIMEOUT_MS, AgentMetrics.NO_OP);
+                          ObjectMapper objectMapper, TaskExecutor sseTaskExecutor,
+                          MemberLevelService memberLevelService) {
+        this(pipelineExecutor, finalizer, objectMapper, sseTaskExecutor, DEFAULT_SSE_TIMEOUT_MS, AgentMetrics.NO_OP,
+                memberLevelService, null);
+    }
+
+    /** 测试便利构造（含画像服务可空——画像缺位时按"无画像照常答"口径）。 */
+    public ChatController(PipelineExecutor pipelineExecutor, ChatTurnFinalizer finalizer,
+                          ObjectMapper objectMapper, TaskExecutor sseTaskExecutor,
+                          MemberLevelService memberLevelService, UserProfileService profileService) {
+        this(pipelineExecutor, finalizer, objectMapper, sseTaskExecutor, DEFAULT_SSE_TIMEOUT_MS, AgentMetrics.NO_OP,
+                memberLevelService, profileService);
     }
 
     @Autowired
@@ -87,19 +101,48 @@ public class ChatController {
                           ObjectMapper objectMapper,
                           @Qualifier("sseTaskExecutor") TaskExecutor sseTaskExecutor,
                           @Value("${app.sse.timeout-ms:120000}") long sseTimeoutMs,
-                          AgentMetrics metrics) {
+                          AgentMetrics metrics,
+                          MemberLevelService memberLevelService,
+                          UserProfileService profileService) {
         this.pipelineExecutor = pipelineExecutor;
         this.finalizer = finalizer;
         this.objectMapper = objectMapper;
         this.sseTaskExecutor = sseTaskExecutor;
         this.metrics = metrics;
         this.sseTimeoutMs = sseTimeoutMs;
+        this.memberLevelService = memberLevelService;
+        this.profileService = profileService;
     }
 
     @PostMapping("/chat")
     public UnifiedResponse chat(@RequestBody ChatRequest request) {
         logArrival(request, "sync");
         return UnifiedResponse.success(run(request, ProgressEmitter.NO_OP, resolveSessionId(request)));
+    }
+
+    /**
+     * 用户画像遗忘权（Phase 22 T102）：删除该用户全部画像字段（Redis 整哈希删除，不可恢复）。
+     * 复用 {@link ChatRequest} 载体（只消费 userId；游客/缺省 → 语义化 no-op 成功）。
+     * 经 {@code AccessGateFilter} 口令闸口（同 /chat）。
+     * 存储异常收口为结构化失败（200 + {@code reset:false, reason}，不落全局 500——2026-09-21
+     * review 修订；客户端据 reset 标志可重试）。
+     */
+    @PostMapping("/profile/reset")
+    public UnifiedResponse resetProfile(@RequestBody ChatRequest request) {
+        String userId = request.userId();
+        log.info("画像遗忘权请求：userId={}", userId);
+        if (profileService == null) {
+            return UnifiedResponse.success(java.util.Map.of("reset", false, "reason", "画像服务未装配"));
+        }
+        try {
+            profileService.reset(userId);
+        } catch (Exception e) {
+            log.warn("画像遗忘权执行失败（存储异常，结构化返回不抛 5xx）：userId={} reason={}",
+                    userId, e.getMessage());
+            return UnifiedResponse.success(java.util.Map.of(
+                    "reset", false, "reason", "画像存储暂不可用，请稍后重试"));
+        }
+        return UnifiedResponse.success(java.util.Map.of("reset", true, "userId", userId == null ? "" : userId));
     }
 
     /** 请求到达打点（2026-09-18）：此前首条日志=查询改写 LLM 完成（晚 0.8~2.6s），
@@ -192,6 +235,13 @@ public class ChatController {
         FirstTokenTimingEmitter timed = new FirstTokenTimingEmitter(progress, startMs);
         PipelineContext context = new PipelineContext(sessionId, request.message());
         context.setUserId(request.userId()); // [[business-tools-workflow-dag]] 真接入：前端传 userId→工作流校验订单归属
+        // Phase 21 等级解析（每请求一次）：登录态+会员服务，失败收敛 V0 fail-closed（seam 契约不抛异常）
+        context.setMemberLevel(memberLevelService.levelOf(request.userId()));
+        // Phase 22 用户画像（L3·每请求加载一次，fail-open）：读取失败/无画像 → null 照常答；
+        // 画像永不承载权限语义（等级唯一来源=memberLevel）
+        if (profileService != null) {
+            context.setMemberProfile(profileService.renderForPrompt(request.userId()));
+        }
         context.setEmitter(timed); // #136：NO_OP（同步 /chat）或 Sse 桥接（chatStream），经计时装饰
         PipelineResult result = pipelineExecutor.run(context);
         // Phase 13：终端后置钩子收口会话持久化 + 审计刷出（best-effort，不阻塞响应、停 MQ→主接口 200）

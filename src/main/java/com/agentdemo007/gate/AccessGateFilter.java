@@ -46,8 +46,8 @@ public class AccessGateFilter extends OncePerRequestFilter {
     /** 闸口令牌请求头（对齐前端 gate.ts 的 X-Access-Code）。 */
     public static final String HEADER = "X-Access-Code";
 
-    /** 只闸对话入口（精确路径）。 */
-    static final Set<String> GATED_PATHS = Set.of("/chat", "/chat/stream");
+    /** 只闸对话入口与画像遗忘权（精确路径；Phase 22 /profile/reset 同口径）。 */
+    static final Set<String> GATED_PATHS = Set.of("/chat", "/chat/stream", "/profile/reset");
 
     private final AccessGateService gateService;
     private final ObjectMapper objectMapper;

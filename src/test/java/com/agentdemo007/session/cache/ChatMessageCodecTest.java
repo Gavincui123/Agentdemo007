@@ -10,12 +10,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 会话消息 JSON 编解码测试（Phase 3·Redis 序列化逻辑，无需真实 Redis）。
+ * 会话消息 JSON 编解码测试（Phase 3·Redis 序列化逻辑，无需真实 Redis；Phase 22 T98 值结构升级回归）。
  *
  * <p>{@link ChatMessageCodec} 负责 {@link ChatMessage}（sealed 四态）↔ JSON 的可逆映射，
  * 是 {@code RedisSessionCacheStore} 的纯序列化内核——可独立单测，不依赖 Redis 连接。
- * 收口：序列化为 Redis 存储格式（role+content DTO），不在 {@link ChatMessage} 上挂 Jackson 注解，
- * 流水线强类型保持库无关。
+ * Phase 22：值结构升级为 {@link SessionMemory}（object 格式），<b>存量纯消息数组格式平滑兼容</b>——
+ * decode 首字符分流，旧值视为无摘要，零迁移。
  */
 class ChatMessageCodecTest {
 
@@ -48,13 +48,48 @@ class ChatMessageCodecTest {
         assertThat(codec.decode(null)).isEmpty();
         assertThat(codec.decode("")).isEmpty();
         assertThat(codec.decode("   ")).isEmpty();
+        assertThat(codec.decodeMemory(null).messages()).isEmpty();
     }
 
     @Test
-    void encode_emptyList_producesEmptyJsonArray() {
+    void encode_emptyList_producesObjectFormatWithNullSummary() {
+        // Phase 22 新格式：恒 object（无摘要时 summary=null，不写空串）
         String json = codec.encode(List.of());
-        assertThat(json).isEqualTo("[]");
+        assertThat(json).contains("\"messages\"");
         assertThat(codec.decode(json)).isEmpty();
+    }
+
+    @Test
+    void encodeMemory_roundTripsSummaryAndMessages() {
+        SessionMemory memory = new SessionMemory("此前在处理退款", List.of(
+                new ChatMessage.User("问"), new ChatMessage.Ai("答")));
+
+        SessionMemory decoded = codec.decodeMemory(codec.encodeMemory(memory));
+
+        assertThat(decoded.summary()).isEqualTo("此前在处理退款");
+        assertThat(decoded.messages()).hasSize(2);
+        assertThat(decoded.messages().get(1).content()).isEqualTo("答");
+    }
+
+    @Test
+    void decodeMemory_legacyArrayFormat_treatedAsNoSummary() {
+        // T98 存量兼容核心钉：升级前写入的 `[{role,content},…]` 数组 → 无摘要记忆，消息零丢失
+        String legacy = "[{\"role\":\"user\",\"content\":\"旧问\"},{\"role\":\"assistant\",\"content\":\"旧答\"}]";
+
+        SessionMemory decoded = codec.decodeMemory(legacy);
+
+        assertThat(decoded.hasSummary()).isFalse();
+        assertThat(decoded.messages()).hasSize(2);
+        assertThat(decoded.messages().get(0).content()).isEqualTo("旧问");
+        assertThat(decoded.messages().get(1).content()).isEqualTo("旧答");
+        // encode 后新格式可再解码（首个压缩周期自然补齐摘要）
+        assertThat(codec.decodeMemory(codec.encodeMemory(decoded)).messages()).hasSize(2);
+    }
+
+    @Test
+    void encodeMemory_blankSummaryStoredAsNull() {
+        String json = codec.encodeMemory(new SessionMemory("  ", List.of(new ChatMessage.User("x"))));
+        assertThat(codec.decodeMemory(json).hasSummary()).isFalse();
     }
 
     @Test

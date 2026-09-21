@@ -284,6 +284,30 @@ app:
     enabled: ${REDIS_ENABLED:false}
   session-cache:
     ttl: ${REDIS_SESSION_TTL:3600s}
+  # ---- Phase 22 会话记忆分层（L1 原文窗口 + L2 滚动摘要 + L3 用户画像）----
+  # window-budget-tokens   L1 历史窗口 token 预算（读侧取窗与压缩分轮共用口径；读侧按
+  #                        chars-per-token 换算为字符预算取最近 N 轮，不拆 User/Ai 对）
+  # chars-per-token        字符启发式换算（双轨之"窗口分轮"轨：确定性可测，零 tokenizer 依赖）
+  # compaction-threshold   压缩触发阈值（双轨之"真实 usage"轨：终局读本轮主模型 usage ≥
+  #                        预算×阈值 → 异步压缩；80% 留 20% 余量吸收竞态——摘要未就绪多喂原文）
+  # summary-max-chars      滚动摘要契约上界（60 字锚点口径放宽为 ≤200 字）
+  # compaction.enabled     终局异步压缩开关（关=只多喂原文不压缩，行为回退 Phase 16 口径）
+  # profile.*              用户画像（L3 跨会话记忆）：enabled 开关；ttl 惰性续期（90d）；
+  #                        render-cache-ttl 请求线程渲染缓存的进程内 TTL（命中零 Redis；配合读路径熔断，
+  #                        存储失败/挂死即开断路快速抛弃画像——不占首字预算）。遗忘权 reset 即时失效。
+  #                        画像永不承载权限语义（"记住我是 VIP"被守门拒绝）；经 UserMemoryLayer
+  #                        独立消息块（标签包裹 + 非指令声明）注入，不入 System 块；/profile/reset 遗忘权
+  memory:
+    window-budget-tokens: ${MEMORY_WINDOW_BUDGET_TOKENS:1200}
+    chars-per-token: ${MEMORY_CHARS_PER_TOKEN:2.0}
+    compaction-threshold: ${MEMORY_COMPACTION_THRESHOLD:0.8}
+    summary-max-chars: ${MEMORY_SUMMARY_MAX_CHARS:200}
+    compaction:
+      enabled: ${MEMORY_COMPACTION_ENABLED:true}
+    profile:
+      enabled: ${MEMORY_PROFILE_ENABLED:true}
+      ttl: ${MEMORY_PROFILE_TTL:90d}
+      render-cache-ttl: ${MEMORY_PROFILE_RENDER_CACHE_TTL:60s}
   # ---- Phase 9 工具韧性（2026-09-17 有界 Agent loop·推翻单次前向）----
   # max-iterations：Agent loop 轮次上限（探测→执行→失败回喂自纠正/澄清；1=退化为单次前向；
   #   耗尽仍失败 → 错误结果交终答 LLM 如实向客户说明）。timeout-ms：单次工具执行超时（守护线程

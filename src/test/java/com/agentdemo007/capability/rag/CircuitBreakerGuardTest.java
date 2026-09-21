@@ -44,9 +44,20 @@ class CircuitBreakerGuardTest {
         CircuitBreakerGuard guard = new CircuitBreakerGuard("test", 60_000, 50);
         assertThatThrownBy(() -> guard.call(() -> { throw new IllegalStateException("挂起"); }))
                 .isInstanceOf(IllegalStateException.class);
-        Thread.sleep(80); // 过冷却期 → 半开放行探测
 
-        assertThat(guard.call(() -> "recovered")).isEqualTo("recovered");
+        // 过冷却期 → 半开放行探测。轮询等待而非固定 sleep：熔断时钟走 System::currentTimeMillis
+        // （墙钟），NTP 回拨/调度抖动会让固定 sleep 偶发不足冷却期（2026-09-21 实测一次）。
+        // 冷却未过时的拒绝在 allowRequest 内快速失败、不 recordFailure——重试安全、不延冷却。
+        String probe = null;
+        for (int i = 0; i < 100 && probe == null; i++) {
+            Thread.sleep(20);
+            try {
+                probe = guard.call(() -> "recovered");
+            } catch (IllegalStateException expectedDuringCooldown) {
+                // 冷却未过，继续等
+            }
+        }
+        assertThat(probe).isEqualTo("recovered");
         assertThat(guard.call(() -> "still-ok")).isEqualTo("still-ok"); // 探测成功 → 关闭
     }
 }

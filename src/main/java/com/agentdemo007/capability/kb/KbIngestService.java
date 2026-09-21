@@ -80,16 +80,24 @@ public class KbIngestService {
         this.props = props;
     }
 
-    /** 录入命令（控制器层已做基本非空校验）。 */
+    /** 录入命令（控制器层已做基本非空校验）；{@code requiredLevel} 必填（T96 三层保险第二层）。 */
     public record KbIngestCommand(String fileName, byte[] content, String docNo, String title,
-                                  KbNamespace namespace, String allowedPrincipals, String domain,
-                                  String versionNote, String createdBy, boolean dryRun) {
+                                  KbNamespace namespace, KbLevel requiredLevel, String allowedPrincipals,
+                                  String domain, String versionNote, String createdBy, boolean dryRun) {
+
+        /** 既有调用方兼容（requiredLevel=V0；生产链路经控制器显式解析必填，漏配不可能到这）。 */
+        public KbIngestCommand(String fileName, byte[] content, String docNo, String title,
+                               KbNamespace namespace, String allowedPrincipals, String domain,
+                               String versionNote, String createdBy, boolean dryRun) {
+            this(fileName, content, docNo, title, namespace, KbLevel.V0, allowedPrincipals,
+                    domain, versionNote, createdBy, dryRun);
+        }
     }
 
     /** 录入/预览结果（切块预览按 {@code app.kb.preview-limit} 截断）。 */
     public record KbIngestResult(Long documentId, String docNo, String title, KbNamespace namespace,
-                                 int version, Integer supersededVersion, String docType, String domain,
-                                 int chunkCount, int charCount, String checksum, boolean indexed,
+                                 int requiredLevel, int version, Integer supersededVersion, String docType,
+                                 String domain, int chunkCount, int charCount, String checksum, boolean indexed,
                                  List<ChunkPreview> previews, int totalChunks) {
     }
 
@@ -114,6 +122,11 @@ public class KbIngestService {
                     parsers.supportedExtensions().stream().sorted().toList()));
         }
         KbNamespace ns = (cmd.namespace() != null) ? cmd.namespace() : KbNamespace.PUBLIC;
+        // T96 必填校验（三层保险第二层：前端 required → 此处显式拒绝 → DB NOT NULL DEFAULT 0 兜底）。
+        // 不静默补 V0——漏配是运营事故，必须显式失败而非悄悄降级为公开可见。
+        if (cmd.requiredLevel() == null) {
+            throw new KbIngestException("文档可见等级必选（V0 公开 ~ V5 全量），漏配将导致权限口径不明");
+        }
         String checksum = sha256(cmd.content());
         Instant now = Instant.now();
 
@@ -152,8 +165,8 @@ public class KbIngestService {
         Integer supersededVersion = null;
 
         if (cmd.dryRun()) {
-            return result(null, docNo, parsed.title(), ns, 0, null, parsed.docType(), cmd.domain(),
-                    checksum, charCount, false, proposed);
+            return result(null, docNo, parsed.title(), ns, cmd.requiredLevel().code(), 0, null,
+                    parsed.docType(), cmd.domain(), checksum, charCount, false, proposed);
         }
 
         // ⑥ 换版收口：旧 ACTIVE 版 → SUPERSEDED + 精确 source 删向量（稠密+稀疏同步）
@@ -182,7 +195,7 @@ public class KbIngestService {
         vectorStore.index(fragments);
 
         // ⑧ 持久化 + 目录快照刷新
-        KbDocumentEntity doc = KbDocumentEntity.create(ns, docNo, cmd.allowedPrincipals(),
+        KbDocumentEntity doc = KbDocumentEntity.create(ns, docNo, cmd.allowedPrincipals(), cmd.requiredLevel(),
                 parsed.title(), cmd.fileName(), parsed.docType(), cmd.domain(), version,
                 checksum, proposed.size(), charCount, cmd.versionNote(), cmd.createdBy(), now);
         doc = documents.save(doc);
@@ -193,10 +206,10 @@ public class KbIngestService {
         }
         chunks.saveAll(chunkRows);
         catalog.refresh(doc);
-        log.info("知识库录入完成：docUid={} v{} chunks={} chars={} superseded={} dryRun=false",
-                docUid, version, proposed.size(), charCount, supersededVersion);
-        return result(doc.getId(), docNo, doc.getTitle(), ns, version, supersededVersion,
-                doc.getDocType(), doc.getDomain(), checksum, charCount, true, proposed);
+        log.info("知识库录入完成：docUid={} v{} level={} chunks={} chars={} superseded={} dryRun=false",
+                docUid, version, cmd.requiredLevel(), proposed.size(), charCount, supersededVersion);
+        return result(doc.getId(), docNo, doc.getTitle(), ns, doc.getRequiredLevel(), version,
+                supersededVersion, doc.getDocType(), doc.getDomain(), checksum, charCount, true, proposed);
     }
 
     /**
@@ -255,7 +268,7 @@ public class KbIngestService {
         return com.agentdemo007.capability.kb.parse.MarkdownTextParser.fileNameBase(fileName);
     }
 
-    private KbIngestResult result(Long documentId, String docNo, String title, KbNamespace ns,
+    private KbIngestResult result(Long documentId, String docNo, String title, KbNamespace ns, int requiredLevel,
                                   int version, Integer supersededVersion, String docType, String domain,
                                   String checksum, int charCount, boolean indexed, List<ProposedChunk> proposed) {
         int limit = props.getPreviewLimit();
@@ -264,7 +277,7 @@ public class KbIngestService {
                 .map(c -> new ChunkPreview(c.seq(), c.heading(),
                         excerpt(c.text()), c.text().length()))
                 .toList();
-        return new KbIngestResult(documentId, docNo, title, ns, version, supersededVersion,
+        return new KbIngestResult(documentId, docNo, title, ns, requiredLevel, version, supersededVersion,
                 docType, domain, proposed.size(), charCount, checksum, indexed, previews, proposed.size());
     }
 

@@ -1,5 +1,6 @@
 package com.agentdemo007.capability.workflow;
 
+import com.agentdemo007.capability.kb.KbLevel;
 import com.agentdemo007.capability.plan.RoutePlan;
 import com.agentdemo007.capability.plan.RoutePlanBaselines;
 import com.agentdemo007.capability.plan.RoutePlanCandidate;
@@ -19,6 +20,7 @@ import org.mockito.Mockito;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -478,6 +480,40 @@ class WorkflowExecutionStepTest {
         assertThat(ctx.concurrentReply().leg1Text().get()).contains("退款"); // 直接执行器：Future 已完成
         assertThat(ctx.concurrentReply().leg2Intent()).isEqualTo("product_query");
         assertThat(store.get("s1")).isEmpty(); // 先 remove
+    }
+
+    @Test
+    void process_concurrentLegs_carryUserIdAndMemberLevel() throws Exception {
+        // Phase 21 等级随请求同行：并发两腿的子上下文必须搬运 userId+memberLevel——
+        // 腿2 子管线含 RagStep@660，漏搬则以缺省 V0 口径降级会员检索（fail-closed 无泄漏但错杀付费会员）
+        AtomicReference<PipelineContext> leg1Ctx = new AtomicReference<>();
+        AfterSaleWorkflow refund = ctx -> {
+            leg1Ctx.set(ctx);
+            return new AfterSaleWorkflowOutcome.Pending(false);
+        };
+        AtomicReference<PipelineContext> leg2Ctx = new AtomicReference<>();
+        SubPipelineRunner sub = subCtx -> {
+            leg2Ctx.set(subCtx);
+            return List.of(new ChatMessage.System("leg2-prompt"));
+        };
+        WorkflowExecutionStep s = new WorkflowExecutionStep(refund,
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Pending(false)).graph(),
+                PendingWorkflowStore.NO_OP, null, null, Runnable::run, sub, new RoutePlanBaselines());
+
+        PipelineContext ctx = new PipelineContext("s1", "退款 ORD-001 想买耳机");
+        RoutePlanCandidate c = new RoutePlanCandidate(
+                "refund_request", true, true, List.of("get_order_detail"), List.of("after_sale_policy"),
+                RoutePlanCandidate.RiskLevel.HIGH, true,
+                RoutePlanCandidate.FallbackPolicy.WORKFLOW_FIRST, false, "product_query");
+        ctx.setRoutePlan(new RoutePlan(c, RoutePlan.Source.LLM_WITH_POLICY_CONSTRAINTS, 0.9, List.of()));
+        ctx.setUserId("10086");
+        ctx.setMemberLevel(KbLevel.V5);
+        s.process(ctx);
+
+        assertThat(leg1Ctx.get().userId()).isEqualTo("10086");
+        assertThat(leg1Ctx.get().memberLevel()).isEqualTo(KbLevel.V5);
+        assertThat(leg2Ctx.get().userId()).isEqualTo("10086");
+        assertThat(leg2Ctx.get().memberLevel()).isEqualTo(KbLevel.V5);
     }
 
     @Test

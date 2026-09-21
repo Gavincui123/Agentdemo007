@@ -20,9 +20,10 @@ import java.time.Instant;
  * SUPERSEDED（向量库中旧片段同步删除，检索只见最新版；DB 保留全版本历史可回溯）。
  * 版本链（SUPERSEDED）+ 删除（DELETED）均为软态——向量库即时生效，历史在 DB 永存。
  *
- * <p>权限模型：PUBLIC 人人可检索；PRIVATE 仅 {@code allowedPrincipals}（逗号分隔主体名单，
- * 对话侧匹配 {@code PipelineContext.userId}，管理台恒可见）可检索。检索侧经
- * {@code KbCatalogService} 内存快照过滤（不逐片段查库）。
+ * <p>权限模型（Phase 21 三轴拆分）：{@code namespace} 管内外边界（PUBLIC 人人可检索 / PRIVATE 仅
+ * {@code allowedPrincipals} 名单主体可检索）；{@code requiredLevel} 管客户等级可见性（安全轴·权限主载体，
+ * 检索主体等级 ≥ 文档要求档）；{@code domain} 管业务分类（路由窄化，不在本实体权限语义内）。
+ * {@code allowedPrincipals} 为点对点例外通道。检索侧经 {@code KbCatalogService} 内存快照过滤（不逐片段查库）。
  * 非 {@code final}、protected 无参构造满足 JPA 代理要求（镜像 {@link HitlTicketEntity} 范式）。
  */
 @Entity
@@ -46,9 +47,14 @@ public class KbDocumentEntity {
     @Column(name = "namespace", nullable = false, length = 16)
     private KbNamespace namespace;
 
-    /** 私有命名空间可检索主体名单（逗号分隔；PUBLIC 忽略）。 */
+    /** 私有命名空间可检索主体名单（逗号分隔；PUBLIC 忽略）。Phase 21 降为例外通道（点对点授权），不承载主权限。 */
     @Column(name = "allowed_principals", length = 512)
     private String allowedPrincipals;
+
+    /** 客户等级可见性（Phase 21 安全轴·权限主载体）：存 {@link com.agentdemo007.capability.kb.KbLevel} 档位 int，
+     *  检索谓词 = 主体等级 ≥ 此档（allowedPrincipals 命中例外优先）。NOT NULL DEFAULT 0 存量行平滑升级。 */
+    @Column(name = "required_level", nullable = false)
+    private int requiredLevel;
 
     /** 文档标题（默认取文件名去扩展名；切块 breadcrumb 首段）。 */
     @Column(name = "title", nullable = false, length = 256)
@@ -125,6 +131,10 @@ public class KbDocumentEntity {
         return allowedPrincipals;
     }
 
+    public int getRequiredLevel() {
+        return requiredLevel;
+    }
+
     public String getTitle() {
         return title;
     }
@@ -190,7 +200,18 @@ public class KbDocumentEntity {
 
     // ---- 装配器（录入服务专用；字段一次成形）----
 
+    /** 既有调用方兼容（requiredLevel=V0；新链路一律走全参装配器——录入必填校验在服务层）。 */
     public static KbDocumentEntity create(KbNamespace namespace, String docNo, String allowedPrincipals,
+                                          String title, String fileName, String docType, String domain,
+                                          int version, String checksum, int chunkCount, int charCount,
+                                          String versionNote, String createdBy, Instant createdAt) {
+        return create(namespace, docNo, allowedPrincipals, com.agentdemo007.capability.kb.KbLevel.V0,
+                title, fileName, docType, domain, version, checksum, chunkCount, charCount,
+                versionNote, createdBy, createdAt);
+    }
+
+    public static KbDocumentEntity create(KbNamespace namespace, String docNo, String allowedPrincipals,
+                                          com.agentdemo007.capability.kb.KbLevel requiredLevel,
                                           String title, String fileName, String docType, String domain,
                                           int version, String checksum, int chunkCount, int charCount,
                                           String versionNote, String createdBy, Instant createdAt) {
@@ -198,6 +219,7 @@ public class KbDocumentEntity {
         e.namespace = namespace;
         e.docNo = docNo;
         e.allowedPrincipals = allowedPrincipals;
+        e.requiredLevel = (requiredLevel != null) ? requiredLevel.code() : 0;
         e.title = title;
         e.fileName = fileName;
         e.docType = docType;

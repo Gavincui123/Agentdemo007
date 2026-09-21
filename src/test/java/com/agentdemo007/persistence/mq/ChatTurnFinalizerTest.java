@@ -169,4 +169,73 @@ class ChatTurnFinalizerTest {
 
         org.mockito.Mockito.verifyNoInteractions(cache);
     }
+
+    @Test
+    void finalizeTurn_usageAboveThreshold_triggersCompactionAndProfileProposal() {
+        // Phase 22 终局记忆维护：真实成轮 + usage 高 → 压缩触发；有身份 → 画像提议
+        CapturingMessagePublisher publisher = new CapturingMessagePublisher();
+        com.agentdemo007.session.cache.SessionCacheService cache =
+                org.mockito.Mockito.mock(com.agentdemo007.session.cache.SessionCacheService.class);
+        com.agentdemo007.session.summary.SessionCompactionService compaction =
+                org.mockito.Mockito.mock(com.agentdemo007.session.summary.SessionCompactionService.class);
+        com.agentdemo007.session.profile.UserProfileService profile =
+                org.mockito.Mockito.mock(com.agentdemo007.session.profile.UserProfileService.class);
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher),
+                AgentMetrics.NO_OP, cache, compaction, profile);
+
+        PipelineContext context = new PipelineContext("trace-7", "sess-7", "查订单 ORD-001");
+        context.setUserId("10086");
+        context.setLastUsageTokens(5000);
+        finalizer.finalizeTurn(context, PipelineResult.ok("已查到"));
+
+        org.mockito.Mockito.verify(compaction).maybeCompactAsync("sess-7", 5000);
+        org.mockito.Mockito.verify(profile).proposeFromTurnAsync("10086", "查订单 ORD-001", "已查到");
+    }
+
+    @Test
+    void finalizeTurn_userCancelled_skipsMemoryMaintenance() {
+        // 取消轮不触发压缩与画像提议（未产出真实轮次）
+        CapturingMessagePublisher publisher = new CapturingMessagePublisher();
+        com.agentdemo007.session.cache.SessionCacheService cache =
+                org.mockito.Mockito.mock(com.agentdemo007.session.cache.SessionCacheService.class);
+        com.agentdemo007.session.summary.SessionCompactionService compaction =
+                org.mockito.Mockito.mock(com.agentdemo007.session.summary.SessionCompactionService.class);
+        com.agentdemo007.session.profile.UserProfileService profile =
+                org.mockito.Mockito.mock(com.agentdemo007.session.profile.UserProfileService.class);
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher),
+                AgentMetrics.NO_OP, cache, compaction, profile);
+
+        PipelineContext context = new PipelineContext("trace-8", "sess-8", "查订单");
+        context.setUserId("10086");
+        context.setLastUsageTokens(5000);
+        finalizer.finalizeTurn(context, com.agentdemo007.common.pipeline.PipelineResult.shortCircuit(
+                "已停止本轮处理。", com.agentdemo007.common.degradation.DegradationScenario.USER_CANCELLED));
+
+        org.mockito.Mockito.verifyNoInteractions(compaction, profile);
+    }
+
+    @Test
+    void finalizeTurn_missingUsage_passesThroughToCompactionServiceWhichSkips() {
+        // usage 缺失（话术短路）→ Finalizer 原样透传 null，压缩服务内部判 null 跳过实际压缩；
+        // 画像提议照常（真实成轮即可）
+        CapturingMessagePublisher publisher = new CapturingMessagePublisher();
+        com.agentdemo007.session.cache.SessionCacheService cache =
+                org.mockito.Mockito.mock(com.agentdemo007.session.cache.SessionCacheService.class);
+        com.agentdemo007.session.summary.SessionCompactionService compaction =
+                org.mockito.Mockito.mock(com.agentdemo007.session.summary.SessionCompactionService.class);
+        com.agentdemo007.session.profile.UserProfileService profile =
+                org.mockito.Mockito.mock(com.agentdemo007.session.profile.UserProfileService.class);
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher),
+                AgentMetrics.NO_OP, cache, compaction, profile);
+
+        PipelineContext context = new PipelineContext("trace-9", "sess-9", "你好");
+        context.setUserId("10086"); // lastUsageTokens 缺省 null
+        finalizer.finalizeTurn(context, PipelineResult.ok("您好"));
+
+        org.mockito.Mockito.verify(compaction).maybeCompactAsync("sess-9", null);
+        org.mockito.Mockito.verify(profile).proposeFromTurnAsync("10086", "你好", "您好");
+    }
 }

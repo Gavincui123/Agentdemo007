@@ -194,7 +194,7 @@ python3 ingest.py --input ../../src/main/resources/corpus \
 ```
 
 - **向量空间一致性**：嵌入模型必须与 Java 检索侧完全一致（SiliconFlow `Qwen/Qwen3-Embedding-8B`，4096 维），换模型需全量重灌
-- **教程**（10 类文档分型矩阵 / 切分策略选型 / OCR 对比 / 远程 Chroma 连接与排障）：[docs/rag-corpus-ingestion-tutorial.md](docs/rag-corpus-ingestion-tutorial.md)
+- **教程**（10 类文档分型矩阵 / 切分策略选型 / OCR 对比 / 远程 Chroma 连接与排障）：[docs/guides/rag-corpus-ingestion-tutorial.md](docs/guides/rag-corpus-ingestion-tutorial.md)
 
 ## 项目结构
 
@@ -214,27 +214,64 @@ src/main/java/com/agentdemo007/
 frontend/         # Vue 3 + Vite SPA（构建产物进后端 jar）
 src/main/resources/corpus/   # RAG 知识库语料（23 份：政策/FAQ Markdown + 活动规则 JSON）
 scripts/rag-ingest/          # 多格式文档清洗切分入库流水线（Python）
-docs/rag-corpus-ingestion-tutorial.md  # 语料清洗切分入库教程
-docs/blog/        # 调优技术博客 + 生产化硬化实录
-docs/sql/         # HITL L2 三表 DDL + mock 数据（用户自建）
-DEPLOY.md         # 单 jar 部署指南（prod MySQL/Redis/MQ 接入 + 闸口发布清单）
+docs/              # 文档（分类管理，导航见 docs/README.md）
+├── architecture/  # 架构全景 + 七层架构总图
+├── design/        # 专项设计规格（specs）与 TDD 实现计划（plans）
+├── guides/        # 实操指南：部署实录 / 语料入库教程
+├── reports/       # 交付报告与实验记录
+└── blog/          # 调优技术博客 + 生产化硬化实录
+DEPLOY.md          # 单 jar 部署指南（prod MySQL/Redis/MQ 接入 + 闸口发布清单）
 docker-compose.yml# 中间件本地编排（MySQL / pgvector 等）
 ```
 
 ## 文档地图
 
+> 完整导航见 [docs/README.md](docs/README.md)（文档按 architecture / design / guides / reports / blog 分类管理）。
+
+**总览与计划**
+
 | 文档 | 内容 |
 |------|------|
-| [docs/项目全景详解.md](docs/项目全景详解.md) | **从这开始读**：15 章全景——架构、流水线步骤、意图识别/多轮对话踩坑实录（漂移/缠绕/粘性/模糊澄清/仲裁器）、RAG 漏斗、HITL L2、闸口、关键数字速查 |
-| [docs/DEVELOPMENT-PLAN.md](docs/DEVELOPMENT-PLAN.md) | 20 个 Phase 的工程化开发计划与实现注记（每处与原设计偏差的诚实记录） |
-| [docs/框架文件.md](docs/框架文件.md) | 七层架构总图 |
+| [docs/DEVELOPMENT-PLAN.md](docs/DEVELOPMENT-PLAN.md) | 22 个 Phase 的工程化开发计划与实现注记（每处与原设计偏差的诚实记录） |
 | [DEPLOY.md](DEPLOY.md) | 部署手册：环境变量大全、Nacos dataId 示例、闸口发布清单 |
-| [docs/部署实录.md](docs/部署实录.md) | 首次上线的踩坑手册：profile/dataId/容器网络/MySQL 授权/nginx 接入等 15+ 个真实问题的现象→根因→修复，含更新回滚流程与安全清单 |
+
+**架构（docs/architecture/）**
+
+| 文档 | 内容 |
+|------|------|
+| [docs/architecture/项目全景详解.md](docs/architecture/项目全景详解.md) | **从这开始读**：15 章全景——架构、流水线步骤、意图识别/多轮对话踩坑实录（漂移/缠绕/粘性/模糊澄清/仲裁器）、RAG 漏斗、HITL L2、闸口、关键数字速查 |
+| [docs/architecture/框架文件.md](docs/architecture/框架文件.md) | 七层架构总图 |
+
+**实操指南（docs/guides/）**
+
+| 文档 | 内容 |
+|------|------|
+| [docs/guides/部署实录.md](docs/guides/部署实录.md) | 首次上线的踩坑手册：profile/dataId/容器网络/MySQL 授权/nginx 接入等 15+ 个真实问题的现象→根因→修复，含更新回滚流程与安全清单 |
+| [docs/guides/rag-corpus-ingestion-tutorial.md](docs/guides/rag-corpus-ingestion-tutorial.md) | 多格式语料「清洗-切分-入库」教程（10 类文档分型/幂等/嵌入缓存/坑） |
+
+**报告与实验（docs/reports/）**
+
+| 文档 | 内容 |
+|------|------|
+| [docs/reports/2026-09-19-refusal-kb-ingest-report.md](docs/reports/2026-09-19-refusal-kb-ingest-report.md) | 拒答机制 + 知识库录入交付报告（含「全绿≠无缺陷」缺陷清单） |
+| [docs/reports/rag-redteam-conflict-demo.md](docs/reports/rag-redteam-conflict-demo.md) | RAG 红队演示：毒片实验与防线盲区诚实标注 |
+
+**设计规格与实现计划（docs/design/）**
+
+| 文档 | 内容 |
+|------|------|
+| [docs/design/](docs/design/)（specs ×3 · plans ×4） | 专项设计规格与 TDD 实现计划（工作流 DAG / 分段提示词 / P0 意图切换 / 前端设计） |
+
+**博客实录（docs/blog/）**
+
+| 文档 | 内容 |
+|------|------|
 | [博客一：全链路延迟与稳定性调优](docs/blog/2026-09-16-agent-latency-stability-tuning.zh.md)（[EN](docs/blog/2026-09-16-agent-latency-stability-tuning.en.md)） | 80.5s → 6.1s 实录：超时预算治理、SSE 生命周期、意图漂移修复 |
 | [博客二：决策层/持久化/闸门硬化](docs/blog/2026-09-18-decision-arbiter-hitl-l2-access-gate.zh.md) | 会话仲裁器、HITL L2 持久化、统一访问闸口 |
-| [docs/rag-corpus-ingestion-tutorial.md](docs/rag-corpus-ingestion-tutorial.md) | 多格式语料「清洗-切分-入库」教程（10 类文档分型/幂等/嵌入缓存/坑） |
-| [docs/rag-redteam-conflict-demo.md](docs/rag-redteam-conflict-demo.md) | RAG 红队演示：毒片实验与防线盲区诚实标注 |
-| [docs/2026-09-19-refusal-kb-ingest-report.md](docs/2026-09-19-refusal-kb-ingest-report.md) | 拒答机制 + 知识库录入交付报告（含「全绿≠无缺陷」缺陷清单） |
-| [docs/sql/](docs/sql/) | HITL L2 三表 DDL + mock 数据 |
-| [docs/plans/](docs/plans/) · [docs/superpowers/](docs/superpowers/) | 专项设计规格与 TDD 实现计划（工作流 DAG / 分段提示词 / P0 意图切换） |
+
+**其他**
+
+| 文档 | 内容 |
+|------|------|
+| [docs/sql/](docs/sql/) | HITL L2 三表 DDL + mock 数据（用户自建） |
 | [scripts/rag-ingest/](scripts/rag-ingest/README.md) | Python 批量入库流水线（10 类文档分型解析 → 清洗 → 切分 → 幂等落库） |

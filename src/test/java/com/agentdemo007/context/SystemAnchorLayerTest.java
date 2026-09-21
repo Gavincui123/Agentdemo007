@@ -91,4 +91,29 @@ class SystemAnchorLayerTest {
         assertThat(content).doesNotContain("会话摘要");
         assertThat(content).doesNotContain("当前意图");
     }
+
+    @Test
+    void memberProfile_neverInSystemBlock_movedToUserMemoryLayer() {
+        // T102 设计修订（2026-09-20 用户裁决）：System 锚点只保留角色/工具/输出规范，
+        // 画像撤出 System 块——经 UserMemoryLayer 独立消息块注入
+        SystemAnchorLayer l = layer(emptyRegistry);
+        PipelineContext ctx = new PipelineContext("s", "继续");
+        ctx.setMemberProfile("偏好：喜欢简洁回复；沟通风格：希望称呼您");
+
+        String content = l.build(ctx).get(0).content();
+
+        assertThat(content).doesNotContain("偏好：喜欢简洁回复");
+        assertThat(content).doesNotContain("用户画像");
+        assertThat(content).doesNotContain("user_profile_reference");
+    }
+
+    @Test
+    void noMemberProfile_noProfileLine() {
+        SystemAnchorLayer l = layer(emptyRegistry);
+        PipelineContext ctx = new PipelineContext("s", "你好");
+
+        String content = l.build(ctx).get(0).content();
+
+        assertThat(content).doesNotContain("用户画像");
+    }
 }

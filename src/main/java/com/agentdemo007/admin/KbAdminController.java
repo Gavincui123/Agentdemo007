@@ -3,6 +3,7 @@ package com.agentdemo007.admin;
 import com.agentdemo007.capability.kb.KbIngestService;
 import com.agentdemo007.capability.kb.KbIngestService.KbIngestCommand;
 import com.agentdemo007.capability.kb.KbIngestService.KbIngestResult;
+import com.agentdemo007.capability.kb.KbLevel;
 import com.agentdemo007.capability.kb.KbNamespace;
 import com.agentdemo007.common.response.ErrorCode;
 import com.agentdemo007.common.response.UnifiedResponse;
@@ -54,12 +55,13 @@ public class KbAdminController {
                                    @RequestParam(value = "docNo", required = false) String docNo,
                                    @RequestParam(value = "title", required = false) String title,
                                    @RequestParam(value = "namespace", defaultValue = "PUBLIC") String namespace,
+                                   @RequestParam(value = "requiredLevel") String requiredLevel,
                                    @RequestParam(value = "allowedPrincipals", required = false) String allowedPrincipals,
                                    @RequestParam(value = "domain", required = false) String domain,
                                    @RequestParam(value = "versionNote", required = false) String versionNote) {
         try {
             KbIngestResult result = ingestService.ingest(command(file, docNo, title, namespace,
-                    allowedPrincipals, domain, versionNote, true));
+                    requiredLevel, allowedPrincipals, domain, versionNote, true));
             return UnifiedResponse.success(result);
         } catch (KbIngestService.KbIngestException e) {
             return UnifiedResponse.error(ErrorCode.BAD_REQUEST, e.getMessage());
@@ -74,12 +76,13 @@ public class KbAdminController {
                                   @RequestParam(value = "docNo", required = false) String docNo,
                                   @RequestParam(value = "title", required = false) String title,
                                   @RequestParam(value = "namespace", defaultValue = "PUBLIC") String namespace,
+                                  @RequestParam(value = "requiredLevel") String requiredLevel,
                                   @RequestParam(value = "allowedPrincipals", required = false) String allowedPrincipals,
                                   @RequestParam(value = "domain", required = false) String domain,
                                   @RequestParam(value = "versionNote", required = false) String versionNote) {
         try {
             KbIngestResult result = ingestService.ingest(command(file, docNo, title, namespace,
-                    allowedPrincipals, domain, versionNote, false));
+                    requiredLevel, allowedPrincipals, domain, versionNote, false));
             return UnifiedResponse.success(result);
         } catch (KbIngestService.KbIngestException e) {
             return UnifiedResponse.error(ErrorCode.BAD_REQUEST, e.getMessage());
@@ -131,21 +134,32 @@ public class KbAdminController {
     // ---- 请求/投影装配 ----
 
     private static KbIngestCommand command(MultipartFile file, String docNo, String title, String namespace,
-                                           String allowedPrincipals, String domain, String versionNote,
-                                           boolean dryRun) throws IOException {
+                                           String requiredLevel, String allowedPrincipals, String domain,
+                                           String versionNote, boolean dryRun) throws IOException {
         KbNamespace ns;
         try {
             ns = KbNamespace.valueOf((namespace == null || namespace.isBlank()) ? "PUBLIC" : namespace);
         } catch (IllegalArgumentException e) {
             throw new KbIngestService.KbIngestException("命名空间非法：" + namespace + "（仅 PUBLIC/PRIVATE）");
         }
+        // T96 必填解析（漏配/非法值话术化拒绝——由上面 catch 转 BAD_REQUEST）：V0~V5 有界词表在代码枚举
+        if (requiredLevel == null || requiredLevel.isBlank()) {
+            throw new KbIngestService.KbIngestException("文档可见等级必选（V0 公开 ~ V5 全量）");
+        }
+        KbLevel level;
+        try {
+            level = KbLevel.valueOf(requiredLevel.strip());
+        } catch (IllegalArgumentException e) {
+            throw new KbIngestService.KbIngestException(
+                    "可见等级非法：" + requiredLevel + "（仅 V0/V1/V2/V3/V4/V5）");
+        }
         return new KbIngestCommand(file.getOriginalFilename(), file.getBytes(), docNo, title,
-                ns, allowedPrincipals, domain, versionNote, null, dryRun);
+                ns, level, allowedPrincipals, domain, versionNote, null, dryRun);
     }
 
     /** 文档台账/详情投影（强类型 record，④收口非 Map）。 */
     public record KbDocumentSummary(Long id, String docNo, String title, String namespace,
-                                    String allowedPrincipals, String docType, String domain,
+                                    int requiredLevel, String allowedPrincipals, String docType, String domain,
                                     int version, String status, int chunkCount, int charCount,
                                     String versionNote, String createdBy, String createdAt,
                                     String supersededAt) {
@@ -163,7 +177,7 @@ public class KbAdminController {
 
     private static KbDocumentSummary toSummary(KbDocumentEntity d) {
         return new KbDocumentSummary(d.getId(), d.getDocNo(), d.getTitle(),
-                d.getNamespace().name(), d.getAllowedPrincipals(), d.getDocType(), d.getDomain(),
+                d.getNamespace().name(), d.getRequiredLevel(), d.getAllowedPrincipals(), d.getDocType(), d.getDomain(),
                 d.getVersion(), d.getStatus().name(), d.getChunkCount(), d.getCharCount(),
                 d.getVersionNote(), d.getCreatedBy(),
                 d.getCreatedAt() == null ? null : d.getCreatedAt().toString(),

@@ -44,9 +44,15 @@ public class ContextConfig {
     }
 
     @Bean
+    UserMemoryLayer userMemoryLayer() {
+        return new UserMemoryLayer();
+    }
+
+    @Bean
     ContextMerger contextMerger(SystemAnchorLayer systemAnchorLayer,
-                               ObjectiveDataLayer objectiveDataLayer,
-                               UserInstructionLayer userInstructionLayer) {
-        return new ContextMerger(systemAnchorLayer, objectiveDataLayer, userInstructionLayer);
+                                UserMemoryLayer userMemoryLayer,
+                                ObjectiveDataLayer objectiveDataLayer,
+                                UserInstructionLayer userInstructionLayer) {
+        return new ContextMerger(systemAnchorLayer, userMemoryLayer, objectiveDataLayer, userInstructionLayer);
     }
 }

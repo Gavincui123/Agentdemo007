@@ -6,6 +6,10 @@ import com.agentdemo007.session.cache.InMemorySessionCacheStore;
 import com.agentdemo007.session.cache.RedisSessionCacheStore;
 import com.agentdemo007.session.cache.SessionCacheService;
 import com.agentdemo007.session.cache.SessionCacheStore;
+import com.agentdemo007.session.cache.SessionWindower;
+import com.agentdemo007.session.profile.InMemoryUserProfileStore;
+import com.agentdemo007.session.profile.RedisUserProfileStore;
+import com.agentdemo007.session.profile.UserProfileStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,15 +68,36 @@ public class RedisConfig {
 
     @Bean
     @Order(100)
-    SessionLoadStep sessionLoadStep(SessionCacheService cacheService) {
-        return new SessionLoadStep(cacheService);
+    SessionLoadStep sessionLoadStep(SessionCacheService cacheService, SessionWindower windower) {
+        return new SessionLoadStep(cacheService, windower);
+    }
+
+    /**
+     * L1 原文窗口策略（Phase 22 T99：字符启发式轨，读侧取窗与压缩分轮共用同一实例——口径一致）。
+     * 预算 {@code app.memory.window-budget-tokens}（默认 1200 tokens）× {@code chars-per-token}（默认 2.0）。
+     */
+    @Bean
+    SessionWindower sessionWindower(@Value("${app.memory.window-budget-tokens:1200}") int windowBudgetTokens,
+                                    @Value("${app.memory.chars-per-token:2.0}") double charsPerToken) {
+        return new SessionWindower(windowBudgetTokens, charsPerToken);
+    }
+
+    /**
+     * 用户画像存储（Phase 22 T102）：默认内存兜底（dev）；{@code app.redis.enabled=true} 时
+     * 由下方 {@code UserProfileRedisConfig} 声明 {@code @Primary} Redis 哈希实现（TTL 90d 惰性续期）。
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "app.redis", name = "enabled", havingValue = "false", matchIfMissing = true)
+    UserProfileStore inMemoryUserProfileStore() {
+        log.info("Redis 未启用，用户画像使用内存存储兜底（进程重启即失忆）");
+        return new InMemoryUserProfileStore();
     }
 
     /**
      * 生产装配：{@code app.redis.enabled=true} 时启用真实 Redis 后端。
      *
      * <p>连接（LettuceConnectionFactory/StringRedisTemplate）由 Spring Boot 从 {@code spring.data.redis.*}
-     * 自动配置提供，本类只声明会话缓存的 {@code @Primary} 选择。无需自建连接工厂。
+     * 自动配置提供，本类只声明会话缓存与画像的 {@code @Primary} 选择。无需自建连接工厂。
      */
     @Configuration
     @ConditionalOnProperty(prefix = "app.redis", name = "enabled", havingValue = "true")
@@ -83,6 +108,14 @@ public class RedisConfig {
         SessionCacheStore redisSessionCacheStore(StringRedisTemplate redisTemplate, ChatMessageCodec codec) {
             log.info("Redis 会话缓存已启用（spring.data.redis.* 自动配置）");
             return new RedisSessionCacheStore(redisTemplate, codec);
+        }
+
+        @Bean
+        @Primary
+        UserProfileStore redisUserProfileStore(StringRedisTemplate redisTemplate,
+                                               @Value("${app.memory.profile.ttl:90d}") Duration profileTtl) {
+            log.info("Redis 用户画像存储已启用（profile:{userId} 哈希，TTL 惰性续期）");
+            return new RedisUserProfileStore(redisTemplate, profileTtl);
         }
     }
 }

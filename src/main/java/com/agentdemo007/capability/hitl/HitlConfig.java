@@ -92,7 +92,8 @@ public class HitlConfig {
                                         HitlBusinessGate businessGate,
                                         ObjectProvider<ChatTurnFinalizer> finalizer,
                                         DegradationPhraseCenter phraseCenter, AgentMetrics metrics,
-                                        ObjectProvider<PipelineStep> steps, ObjectProvider<ObjectMapper> objectMapper) {
+                                        ObjectProvider<PipelineStep> steps, ObjectProvider<ObjectMapper> objectMapper,
+                                        com.agentdemo007.session.MemberLevelService memberLevelService) {
         List<PipelineStep> allSteps = steps.stream().toList();
         long postSteps = allSteps.stream().filter(s -> {
             org.springframework.core.annotation.Order o =
@@ -103,6 +104,6 @@ public class HitlConfig {
         log.info("HITL 恢复服务装配：恢复后段步骤数={}（@Order > {}），业务前置校验=已接入", postSteps, HitlStep.ORDER);
         return new HitlResumeService(ticketService, checkpointService, finalizer.getIfAvailable(),
                 phraseCenter, metrics, allSteps, objectMapper.getIfAvailable(ObjectMapper::new),
-                businessGate, null);
+                businessGate, null, memberLevelService);
     }
 }

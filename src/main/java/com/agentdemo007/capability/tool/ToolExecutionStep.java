@@ -9,6 +9,8 @@ import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.intent.Intent;
 import com.agentdemo007.observability.AgentMetrics;
 import com.agentdemo007.resilience.ToolCircuitOpenException;
+import com.agentdemo007.session.ChatSubject;
+import com.agentdemo007.session.ChatSubjectHolder;
 import com.agentdemo007.session.model.StandardQuery;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -81,6 +83,10 @@ public class ToolExecutionStep implements PipelineStep {
             return new StepOutcome.Proceed();
         }
         String query = resolveQuery(context);
+        // Phase 21 等级门（政策工具通道不绕行）：主体随工具执行窗口同行（单一写者），政策 @Tool 经
+        // ChatSubjectHolder.current() 读取；finally 清除防线程池串号——窗外读取收敛 ANONYMOUS（fail-closed）。
+        // 超时模式（默认 10s）下工具在守护线程执行，跨线程传播由 ResilientToolExecutor 快照/回放承接。
+        ChatSubjectHolder.set(ChatSubject.of(context.userId(), context.memberLevel()));
         try {
             ToolTurn turn = executor.execute(query);
             if (!turn.results().isEmpty()) {
@@ -104,6 +110,8 @@ public class ToolExecutionStep implements PipelineStep {
                 log.warn("指标记录失败，忽略（不影响降级短路）：{}", metricEx.getMessage());
             }
             return new StepOutcome.ShortCircuit(DegradationScenario.TOOL_FAILURE);
+        } finally {
+            ChatSubjectHolder.clear();
         }
     }
 

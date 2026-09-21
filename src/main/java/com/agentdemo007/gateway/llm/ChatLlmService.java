@@ -95,7 +95,17 @@ public class ChatLlmService {
      * 随 {@code GatewayRequest} 进「LLM出站」日志——同轮多次出站按用途可辨。包裹语义同 {@link #chatRaw(String, Intent)}。
      */
     public String chatRaw(String prompt, Intent intent, String scene) {
-        return invoke(prompt, intent, disableThinkingFor(intent), scene);
+        return invokeDetailed(prompt, intent, disableThinkingFor(intent), scene).content();
+    }
+
+    /**
+     * 同步对话（不二次包裹 + 携带完整响应，Phase 22 T99）：终答主模型专用——
+     * {@code LlmResponse.tokens()} 即本轮主模型真实 usage 总 token，OutputStep 写入
+     * {@code PipelineContext.lastUsageTokens} 供终局记忆压缩触发判定（80% 阈值）。
+     * 包裹/路由/容灾语义与 {@link #chatRaw(String, Intent, String)} 完全一致。
+     */
+    public LlmResponse chatRawDetailed(String prompt, Intent intent, String scene) {
+        return invokeDetailed(prompt, intent, disableThinkingFor(intent), scene);
     }
 
     /**
@@ -153,6 +163,10 @@ public class ChatLlmService {
     }
 
     private String invoke(String prompt, Intent intent, boolean disableThinking, String scene) {
+        return invokeDetailed(prompt, intent, disableThinking, scene).content();
+    }
+
+    private LlmResponse invokeDetailed(String prompt, Intent intent, boolean disableThinking, String scene) {
         Optional<RouteRule> rule = center.routeFor(intent);
         String primary = resolvePrimary(intent, rule);
         // 主备容灾：有路由规则则按其备链建 FailoverPolicy（maxRetries=备链长度，
@@ -175,7 +189,7 @@ public class ChatLlmService {
         GatewayRequest request = new GatewayRequest(primary, prompt, maxTokens,
                 failover, center.flowControl(), disableThinking, scene);
         LlmResponse response = gateway.invoke(request);
-        return response.content();
+        return response;
     }
 
     /** 解析主模型：路由规则优先，否则选择策略在启用模型中选。 */

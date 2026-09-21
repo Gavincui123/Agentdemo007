@@ -11,6 +11,8 @@ import com.agentdemo007.resilience.ToolCircuitBreaker;
 import com.agentdemo007.resilience.ToolCircuitOpenException;
 import com.agentdemo007.resilience.ToolHttpException;
 import com.agentdemo007.resilience.ToolTimeoutException;
+import com.agentdemo007.session.ChatSubject;
+import com.agentdemo007.session.ChatSubjectHolder;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.exception.ToolArgumentsException;
 import dev.langchain4j.exception.ToolExecutionException;
@@ -159,9 +161,19 @@ public class ResilientToolExecutor implements ToolExecutor {
     /** 单次执行（超时预算内）：timeoutMs>0 走守护线程池硬中断，否则直调。 */
     private String callOnce(ToolExecutionRequest request) {
         if (timeoutMs <= 0) {
-            return delegate.execute(request, null);
+            return delegate.execute(request, null); // 同线程：主体已在 ThreadLocal（ToolExecutionStep 窗口）
         }
-        FutureTask<String> task = new FutureTask<>(() -> delegate.execute(request, null));
+        // 超时模式（生产默认）：工具在池化守护线程执行，ThreadLocal 不随线程池传播——
+        // 跳变前快照请求主体、执行时回放并清除（Phase 21 等级门跨线程口径；重试每 attempt 重新快照）。
+        ChatSubject subject = ChatSubjectHolder.current();
+        FutureTask<String> task = new FutureTask<>(() -> {
+            ChatSubjectHolder.set(subject);
+            try {
+                return delegate.execute(request, null);
+            } finally {
+                ChatSubjectHolder.clear();
+            }
+        });
         TIMEOUT_POOL.execute(task);
         try {
             return task.get(timeoutMs, TimeUnit.MILLISECONDS);

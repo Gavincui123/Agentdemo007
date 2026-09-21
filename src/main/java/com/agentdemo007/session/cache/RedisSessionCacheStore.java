@@ -14,7 +14,8 @@ import java.util.List;
 /**
  * Redis 会话缓存存储（第二层·真实 Redis 后端）。
  *
- * <p>编解码交由 {@link ChatMessageCodec}（Phase 3 序列化内核），键前缀 {@code session:}。
+ * <p>编解码交由 {@link ChatMessageCodec}（Phase 3 序列化内核；Phase 22 升级为
+ * {@link SessionMemory} 值结构 + 存量纯消息数组平滑兼容），键前缀 {@code session:}。
  * 任何 Redis 访问异常（连接拒绝、超时、序列化失败）统一包装为
  * {@link SessionCacheException}（保留 cause），由 {@code SessionCacheService.load/append}
  * 与 {@code SessionLoadStep} 捕获后走 {@code SESSION_DOWN} 话术短路，不向用户抛 5xx。
@@ -33,11 +34,11 @@ public class RedisSessionCacheStore implements SessionCacheStore {
     }
 
     @Override
-    public List<ChatMessage> load(String sessionId) {
+    public SessionMemory load(String sessionId) {
         try {
             ValueOperations<String, String> ops = redisTemplate.opsForValue();
             String json = ops.get(KEY_PREFIX + sessionId);
-            return codec.decode(json); // null/空白 → 空列表
+            return codec.decodeMemory(json); // null/空白 → 空记忆；旧数组格式 → 无摘要记忆
         } catch (SessionCacheException e) {
             throw e;
         } catch (Exception e) {
@@ -51,15 +52,25 @@ public class RedisSessionCacheStore implements SessionCacheStore {
         try {
             String key = KEY_PREFIX + sessionId;
             ValueOperations<String, String> ops = redisTemplate.opsForValue();
-            String existing = ops.get(key);
-            List<ChatMessage> all = codec.decode(existing);
+            SessionMemory existing = codec.decodeMemory(ops.get(key));
+            List<ChatMessage> all = existing.mutableMessages();
             all.addAll(messages);
-            ops.set(key, codec.encode(all), ttl);
+            ops.set(key, codec.encodeMemory(new SessionMemory(existing.summary(), all)), ttl);
         } catch (SessionCacheException e) {
             throw e;
         } catch (Exception e) {
             log.error("Redis 会话历史写入失败：sessionId={} reason={}", sessionId, e.getMessage(), e);
             throw new SessionCacheException("Redis 会话写入失败：" + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void save(String sessionId, SessionMemory memory, Duration ttl) {
+        try {
+            redisTemplate.opsForValue().set(KEY_PREFIX + sessionId, codec.encodeMemory(memory), ttl);
+        } catch (Exception e) {
+            log.error("Redis 会话记忆写回失败：sessionId={} reason={}", sessionId, e.getMessage(), e);
+            throw new SessionCacheException("Redis 会话写回失败：" + e.getMessage(), e);
         }
     }
 }

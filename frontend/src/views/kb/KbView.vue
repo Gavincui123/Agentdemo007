@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   KB_SUPPORTED_EXTENSIONS,
+  KB_LEVEL_OPTIONS,
   deleteDocument,
   getDocument,
   ingestDocument,
@@ -36,6 +37,7 @@ const form = ref({
   docNo: '',
   title: '',
   namespace: 'PUBLIC' as 'PUBLIC' | 'PRIVATE',
+  requiredLevel: '',
   allowedPrincipals: '',
   domain: '',
   versionNote: '',
@@ -50,6 +52,16 @@ const statusLabel: Record<string, string> = {
   DELETED: '已下架',
 }
 
+/** 可见等级档位展示（对齐后端 KbLevel V0~V5）。 */
+const levelLabel: Record<number, string> = {
+  0: 'V0 公开',
+  1: 'V1 注册',
+  2: 'V2 白银',
+  3: 'V3 黄金',
+  4: 'V4 铂金',
+  5: 'V5 全量',
+}
+
 function pickFile(): void {
   fileInput.value?.click()
 }
@@ -62,6 +74,7 @@ function onFileChange(e: Event): void {
 
 function validate(): string | null {
   if (!file.value) return '请先选择知识文件'
+  if (!form.value.requiredLevel) return '请选择文档可见等级（V0 公开 ~ V5 全量）'
   if (form.value.namespace === 'PRIVATE' && !form.value.allowedPrincipals.trim()) {
     return '私有知识需填写可见主体（逗号分隔的用户 ID），否则对话侧将检索不到'
   }
@@ -73,6 +86,7 @@ function ingestForm() {
     docNo: form.value.docNo,
     title: form.value.title,
     namespace: form.value.namespace,
+    requiredLevel: form.value.requiredLevel,
     allowedPrincipals: form.value.allowedPrincipals,
     domain: form.value.domain,
     versionNote: form.value.versionNote,
@@ -207,6 +221,12 @@ onMounted(refresh)
               <el-option label="私有（名单主体可检索）" value="PRIVATE" />
             </el-select>
           </div>
+          <div class="kb__field">
+            <label class="kb__label">可见等级（必选）</label>
+            <el-select v-model="form.requiredLevel" size="small" placeholder="客户等级 ≥ 此档才可检索">
+              <el-option v-for="o in KB_LEVEL_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+            </el-select>
+          </div>
           <div v-if="form.namespace === 'PRIVATE'" class="kb__field">
             <label class="kb__label">可见主体（逗号分隔用户 ID）</label>
             <el-input v-model="form.allowedPrincipals" size="small" placeholder="如 10086,10010" />
@@ -232,6 +252,7 @@ onMounted(refresh)
             <span class="kb__badge" :class="preview.namespace === 'PUBLIC' ? 'kb__badge--public' : 'kb__badge--private'">
               {{ preview.namespace === 'PUBLIC' ? '公开' : '私有' }}
             </span>
+            <span class="kb__badge kb__badge--level">{{ levelLabel[preview.requiredLevel] ?? `V${preview.requiredLevel}` }}</span>
             <span class="tnum kb__preview-stat">{{ preview.totalChunks }} 块 · {{ preview.charCount }} 字 · sha256[:8] {{ preview.checksum.slice(0, 8) }}</span>
             <span v-if="preview.indexed" class="kb__badge kb__badge--ok">已入库</span>
             <span v-else class="kb__badge kb__badge--warn">试运行·未入库</span>
@@ -278,6 +299,11 @@ onMounted(refresh)
                 {{ row.namespace === 'PUBLIC' ? '公开' : '私有' }}
               </span>
               <span v-if="row.namespace === 'PRIVATE' && row.allowedPrincipals" class="mono kb__principals">{{ row.allowedPrincipals }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="可见等级" width="96">
+            <template #default="{ row }">
+              <span class="kb__badge kb__badge--level">{{ levelLabel[row.requiredLevel] ?? `V${row.requiredLevel}` }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="docType" label="类型" width="70" class-name="mono" />
@@ -461,6 +487,11 @@ onMounted(refresh)
 .kb__badge--private {
   border-color: var(--amber);
   color: var(--amber);
+}
+.kb__badge--level {
+  border-color: var(--ink-500);
+  color: var(--ink-100);
+  background: var(--ink-700);
 }
 .kb__badge--ok {
   border-color: var(--signal);

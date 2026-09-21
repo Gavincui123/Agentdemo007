@@ -116,14 +116,20 @@ CREATE TABLE IF NOT EXISTS biz_order (
 -- -----------------------------------------------------------------------------
 -- 知识库文档（[[kb-ingest-design]]·任务3 元数据）：/admin/kb 录入通道。
 -- 业务键 = namespace + doc_no，version 单调自增：重灌即换版（旧版 SUPERSEDED + 向量删除，
--- 检索只见最新版，DB 保留全版本历史）。权限：PUBLIC 人人可检索；PRIVATE 仅
--- allowed_principals 名单主体（对话侧 PipelineContext.userId）。对齐 KbDocumentEntity。
+-- 检索只见最新版，DB 保留全版本历史）。权限（Phase 21 三轴拆分）：namespace 管内外边界
+-- （PUBLIC 人人可检索 / PRIVATE 仅 allowed_principals 名单主体）；required_level 管客户等级
+-- 可见性（安全轴·权限主载体，词表在代码枚举 KbLevel）。对齐 KbDocumentEntity。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS kb_document (
     id                 BIGINT        NOT NULL AUTO_INCREMENT,
     doc_no             VARCHAR(128)  NOT NULL,
     namespace          VARCHAR(16)   NOT NULL,
     allowed_principals VARCHAR(512),
+    -- 客户等级可见性（Phase 21 安全轴·权限主载体）：V0 公开~V5 全量，检索谓词 =
+    -- 主体等级 >= required_level（allowed_principals 命中例外优先）。DEFAULT 0 使存量行
+    -- 平滑升级=V0 公开口径（既有检索行为零回归）。
+    -- 存量库补列（CREATE IF NOT EXISTS 不会改表）：ALTER TABLE kb_document ADD COLUMN required_level TINYINT NOT NULL DEFAULT 0;
+    required_level     TINYINT       NOT NULL DEFAULT 0,
     title              VARCHAR(256)  NOT NULL,
     file_name          VARCHAR(256),
     doc_type           VARCHAR(16)   NOT NULL,

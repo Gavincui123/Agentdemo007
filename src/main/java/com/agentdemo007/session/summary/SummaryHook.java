@@ -24,4 +24,18 @@ public interface SummaryHook {
      * @return 摘要文本，或 empty 表示不可用
      */
     Optional<String> summarize(List<ChatMessage> priorHistory, String currentInput);
+
+    /**
+     * 滚动摘要增量合并（Phase 22·T100/T101，终局异步压缩路径专用）：
+     * 旧摘要 + 新滑出轮次 → 合并后的新摘要（≤200 字契约，垃圾守护继承）。
+     *
+     * <p>返回 empty 表示本次合并不可用（LLM 失败/垃圾输出）——调用方沿用旧摘要继续
+     * （业务键白名单由调用方独立补齐，不依赖摘要质量），永不阻塞、永不重压全量。
+     *
+     * @param oldSummary 既有滚动摘要（可为 null=尚无）
+     * @param slidOut    本次滑出窗口的轮次消息（User/Ai 对）
+     */
+    default Optional<String> summarizeRolling(String oldSummary, List<ChatMessage> slidOut) {
+        return Optional.empty();
+    }
 }

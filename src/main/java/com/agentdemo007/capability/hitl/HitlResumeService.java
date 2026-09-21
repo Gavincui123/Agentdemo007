@@ -1,5 +1,6 @@
 package com.agentdemo007.capability.hitl;
 
+import com.agentdemo007.capability.kb.KbLevel;
 import com.agentdemo007.capability.plan.RoutePlan;
 import com.agentdemo007.common.degradation.DegradationPhraseCenter;
 import com.agentdemo007.common.pipeline.PipelineContext;
@@ -9,6 +10,7 @@ import com.agentdemo007.common.pipeline.PipelineStep;
 import com.agentdemo007.intent.Intent;
 import com.agentdemo007.observability.AgentMetrics;
 import com.agentdemo007.persistence.mq.ChatTurnFinalizer;
+import com.agentdemo007.session.MemberLevelService;
 import com.agentdemo007.session.model.StandardQuery;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -62,12 +64,13 @@ public class HitlResumeService {
     private final ObjectMapper objectMapper;
     private final HitlBusinessGate businessGate; // 恒非空（null → permissive 兜底）
     private final Executor runner;
+    private final MemberLevelService memberLevelService; // 恒非空（null → V0 兜底）
 
     public HitlResumeService(HumanTicketService ticketService, HitlCheckpointService checkpointService,
                              ChatTurnFinalizer finalizer, DegradationPhraseCenter phraseCenter,
                              AgentMetrics metrics, List<PipelineStep> steps, ObjectMapper objectMapper) {
         this(ticketService, checkpointService, finalizer, phraseCenter, metrics, steps, objectMapper,
-                null, defaultRunner());
+                null, defaultRunner(), null);
     }
 
     public HitlResumeService(HumanTicketService ticketService, HitlCheckpointService checkpointService,
@@ -75,7 +78,7 @@ public class HitlResumeService {
                              AgentMetrics metrics, List<PipelineStep> steps, ObjectMapper objectMapper,
                              Executor runner) {
         this(ticketService, checkpointService, finalizer, phraseCenter, metrics, steps, objectMapper,
-                null, runner);
+                null, runner, null);
     }
 
     /** 全参构造（业务前置校验门 + 执行器可控）；{@code gate} 为 null 时用宽松门（兼容口径）。 */
@@ -83,6 +86,15 @@ public class HitlResumeService {
                              ChatTurnFinalizer finalizer, DegradationPhraseCenter phraseCenter,
                              AgentMetrics metrics, List<PipelineStep> steps, ObjectMapper objectMapper,
                              HitlBusinessGate businessGate, Executor runner) {
+        this(ticketService, checkpointService, finalizer, phraseCenter, metrics, steps, objectMapper,
+                businessGate, runner, null);
+    }
+
+    /** 全参构造（Phase 21 +会员等级解析）：恢复链路含 RagStep，重建上下文须重解析等级（fail-closed V0 兜底）。 */
+    public HitlResumeService(HumanTicketService ticketService, HitlCheckpointService checkpointService,
+                             ChatTurnFinalizer finalizer, DegradationPhraseCenter phraseCenter,
+                             AgentMetrics metrics, List<PipelineStep> steps, ObjectMapper objectMapper,
+                             HitlBusinessGate businessGate, Executor runner, MemberLevelService memberLevelService) {
         this.ticketService = ticketService;
         this.checkpointService = checkpointService;
         this.finalizer = finalizer;
@@ -92,6 +104,7 @@ public class HitlResumeService {
         this.objectMapper = (objectMapper != null) ? objectMapper : new ObjectMapper();
         this.businessGate = (businessGate != null) ? businessGate : HitlBusinessGate.permissive();
         this.runner = (runner != null) ? runner : defaultRunner();
+        this.memberLevelService = (memberLevelService != null) ? memberLevelService : uid -> KbLevel.V0;
     }
 
     private static Executor defaultRunner() {
@@ -170,6 +183,8 @@ public class HitlResumeService {
         if (snap.userId() != null && !snap.userId().isBlank()) {
             context.setUserId(snap.userId());
         }
+        // Phase 21 等级重解析（快照不持久等级——以恢复时刻会员服务为准，失败 fail-closed V0）
+        context.setMemberLevel(memberLevelService.levelOf(snap.userId()));
         if (snap.standardQueryText() != null && !snap.standardQueryText().isBlank()) {
             context.setStandardQuery(StandardQuery.of(snap.standardQueryText()));
         }

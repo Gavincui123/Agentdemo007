@@ -3,6 +3,7 @@ import { ref, nextTick, watch, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useChatStore } from '../../stores/chat'
+import { DEMO_IDENTITIES, currentIdentity, setIdentity } from '../../stores/identity'
 import MessageBubble from '../../components/MessageBubble.vue'
 import { fetchGateStatus, hasAccessCode, type GateStatus } from '../../api/gate'
 
@@ -23,6 +24,16 @@ const router = useRouter()
 const input = ref('')
 const streamMode = ref(true)
 const abortCtrl = ref<AbortController | null>(null)
+
+// 演示身份切换器（Phase 21 等级可见性演示）：切换后持久化 + 重置会话——
+// 旧会话历史可能含高等级档知识答案，携带进低等级会话会污染演示观感；后端每请求重解析等级
+const identityId = ref(currentIdentity().userId)
+watch(identityId, (v) => {
+  setIdentity(v)
+  store.clear()
+  const id = currentIdentity()
+  ElMessage.info(`演示身份：${id.name}（${id.level}）——会话已重置`)
+})
 
 const busy = computed(() => store.loading || store.streaming)
 const listRef = ref<HTMLElement | null>(null)
@@ -77,6 +88,7 @@ const EXAMPLES = [
   '帮我开增值税专用发票',
   '2加3乘4等于多少',
   '退款流程是什么',
+  '会员有什么专属退款权益',
 ]
 
 async function send(): Promise<void> {
@@ -136,6 +148,19 @@ watch(
         对话
       </div>
       <div class="chat-view__mode">
+        <el-select
+          v-model="identityId"
+          class="chat-view__identity"
+          size="small"
+          title="演示身份（demo）：会员等级决定知识库可见档位；等级唯一来源=会员服务，对话自称不采信"
+        >
+          <el-option
+            v-for="i in DEMO_IDENTITIES"
+            :key="i.userId"
+            :label="`${i.name} · ${i.level}`"
+            :value="i.userId"
+          />
+        </el-select>
         <button
           v-if="gateEnabled"
           class="chat-view__gate"
@@ -249,6 +274,11 @@ watch(
 }
 .chat-view__mode-label--active {
   color: var(--signal);
+}
+/* 演示身份切换器（等级可见性 demo）：与同步/流式开关同行 */
+.chat-view__identity {
+  width: 138px;
+  margin-right: 8px;
 }
 /* 闸口登录入口（统一旋钮开启时显示）：未验证醒目提示、已验证弱化 */
 .chat-view__gate {

@@ -23,6 +23,9 @@ public class LlmSummaryHook implements SummaryHook {
 
     private static final Logger log = LoggerFactory.getLogger(LlmSummaryHook.class);
 
+    /** 滚动摘要契约上界（T101：60 字锚点口径放宽为 ≤200 字滚动摘要，测试钉死）。 */
+    static final int ROLLING_MAX_CHARS = 200;
+
     private final ChatLlmService llm;
 
     public LlmSummaryHook(ChatLlmService llm) {
@@ -59,6 +62,49 @@ public class LlmSummaryHook implements SummaryHook {
     /** 垃圾摘要判定：含 '{'/'}'（提示词/JSON 碎片回显）或超过 60 字（一句话概括的正常上界）。 */
     private static boolean isGarbage(String summary) {
         return summary.indexOf('{') >= 0 || summary.indexOf('}') >= 0 || summary.length() > 60;
+    }
+
+    /** 滚动摘要垃圾判定（T101 契约：上界放宽至 ≤200 字；花括号碎片回显判定继承）。 */
+    private static boolean isGarbageRolling(String summary) {
+        return summary.indexOf('{') >= 0 || summary.indexOf('}') >= 0 || summary.length() > ROLLING_MAX_CHARS;
+    }
+
+    @Override
+    public Optional<String> summarizeRolling(String oldSummary, List<ChatMessage> slidOut) {
+        if (slidOut == null || slidOut.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            String prompt = buildRollingPrompt(oldSummary, slidOut);
+            String summary = llm.chat(prompt, Intent.CHIT_CHAT, "滚动摘要");
+            if (summary == null || summary.isBlank()) {
+                return Optional.empty();
+            }
+            String trimmed = summary.trim();
+            if (isGarbageRolling(trimmed)) {
+                // 滚动摘要要长期驻留 System 块——垃圾/超长（>200 字）宁缺毋滥（②降级：调用方沿用旧摘要）
+                log.warn("滚动摘要输出疑似垃圾（含花括号或超 {} 字），丢弃：len={}", ROLLING_MAX_CHARS, trimmed.length());
+                return Optional.empty();
+            }
+            return Optional.of(trimmed);
+        } catch (Exception e) {
+            log.warn("滚动摘要生成失败（降级沿用旧摘要）：reason={}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /** 滚动摘要指令：增量合并（旧摘要 + 新滑出轮次），业务键（订单号等）原样保留。 */
+    private String buildRollingPrompt(String oldSummary, List<ChatMessage> slidOut) {
+        String transcript = slidOut.stream()
+                .map(m -> "[" + label(m) + "] " + m.content())
+                .collect(Collectors.joining("\n"));
+        String prior = (oldSummary == null || oldSummary.isBlank()) ? "（无）" : oldSummary;
+        return "你是电商客服系统的会话摘要助手。请把「已有摘要」与「新对话段」合并为一段不超过 200 字的滚动摘要，"
+                + "作为后续对话的背景锚点（仅输出摘要，不要附加说明）。要求：\n"
+                + "1. 保留用户诉求主线与尚未了结的事项（是否已解决/待跟进）；\n"
+                + "2. 出现的单号等业务标识（如 ORD-001）必须原样保留，不得改写或省略；\n"
+                + "3. 已有摘要仍成立的内容直接继承，不重复展开。\n"
+                + "已有摘要：" + prior + "\n新对话段：\n" + transcript;
     }
 
     private String buildPrompt(List<ChatMessage> priorHistory, String currentInput) {

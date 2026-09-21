@@ -336,6 +336,8 @@ public class WorkflowExecutionStep implements PipelineStep {
         if (subPipelineRunner != null) {
             PipelineContext sub = new PipelineContext(context.traceId(), context.sessionId(), context.rawInput());
             sub.setUserId(context.userId());
+            // Phase 21：等级随请求同行（子管线含 RagStep@660，漏搬则以缺省 V0 口径降级会员检索）
+            sub.setMemberLevel(context.memberLevel());
             sub.setHistory(context.history());
             sub.setStandardQuery(context.standardQuery());
             sub.setSummary(context.summary());
@@ -362,6 +364,7 @@ public class WorkflowExecutionStep implements PipelineStep {
         }
         PipelineContext clone = new PipelineContext(context.traceId(), context.sessionId(), context.rawInput());
         clone.setUserId(context.userId());
+        clone.setMemberLevel(context.memberLevel()); // Phase 21：等级随行（与腿2 子上下文同口径）
         // 改写层产物随行（与腿2 子上下文同口径）：订单号可能只存在于 standardQuery（短期记忆补全），
         // 缺失则图内 extractOrderId 回退链断在 raw → 误判 ORDER_NOT_FOUND（2026-09-20 review 修复）
         clone.setStandardQuery(context.standardQuery());
