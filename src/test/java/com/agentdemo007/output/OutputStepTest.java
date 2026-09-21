@@ -198,6 +198,34 @@ class OutputStepTest {
         assertThat(c.modelResponse()).isEqualTo("原始回复");
     }
 
+    @Test
+    void blockingReply_capturesRealUsageIntoContext() {
+        // Phase 22 T99：阻塞路径经 chatRawDetailed 拿真实 usage → context.lastUsageTokens（压缩触发轨）
+        CapturingExecutor exec = new CapturingExecutor();
+        exec.next = new LlmResponse("m1", "原始回复", 5);
+        OutputStep step = new OutputStep(service(exec, singleModel()), gateway, securityFilter,
+                OutputSchemaResolver.lenient(), ReAsk.none());
+
+        PipelineContext c = ctx(Intent.CHIT_CHAT, "你好");
+        step.process(c);
+
+        assertThat(c.lastUsageTokens()).isEqualTo(5);
+    }
+
+    @Test
+    void streamingReply_capturesRealUsageIntoContext() {
+        // Phase 22 T99：流式路径 onCompleteResponse 的 tokens 同样入轨
+        OutputStep step = new OutputStep(service(new CapturingExecutor(), singleModel()), gateway, securityFilter,
+                OutputSchemaResolver.lenient(), ReAsk.none());
+        List<ProgressEvent> emitted = new ArrayList<>();
+        PipelineContext c = ctx(Intent.CHIT_CHAT, "查订单");
+        c.setEmitter(emitted::add);
+
+        step.process(c);
+
+        assertThat(c.lastUsageTokens()).isEqualTo(5); // CapturingExecutor.stream 回调 tokens=5
+    }
+
     // ---- [[q2-token-streaming]] 流式分支：emitter 非 NO_OP → 逐 token 流式；onError→阻塞 fallback ----
 
     @Test

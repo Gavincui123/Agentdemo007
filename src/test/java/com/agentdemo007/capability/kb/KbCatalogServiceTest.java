@@ -100,4 +100,69 @@ class KbCatalogServiceTest {
         assertThat(readable).hasSize(2);
         assertThat(readable.get(0).source()).isEqualTo("kb-refund");
     }
+
+    // ---- Phase 21 客户等级可见性（三轴谓词）----
+
+    /** 带可见等级的文档工厂（其余字段对齐既有 doc()）。 */
+    private static KbDocumentEntity doc(KbNamespace ns, String docNo, String principals,
+                                        KbLevel level, KbDocumentEntity.Status status) {
+        return KbDocumentEntity.create(ns, docNo, principals, level, "标题", "faq.md", "md", null,
+                1, "checksum", 3, 100, null, "admin", Instant.now());
+    }
+
+    @Test
+    void levelPredicateGatesPublicDocs() {
+        when(repository.findByStatusOrderByCreatedAtDesc(KbDocumentEntity.Status.ACTIVE))
+                .thenReturn(List.of(
+                        doc(KbNamespace.PUBLIC, "basic", null, KbLevel.V0, KbDocumentEntity.Status.ACTIVE),
+                        doc(KbNamespace.PUBLIC, "gold", null, KbLevel.V3, KbDocumentEntity.Status.ACTIVE)));
+        catalog.loadAll();
+
+        String basic = managed(KbNamespace.PUBLIC, "basic", 1, 1).source();
+        String gold = managed(KbNamespace.PUBLIC, "gold", 1, 1).source();
+
+        // V1 会话查 V3 文档不可见（回归钉死·T97）
+        assertThat(catalog.readable(gold, "10010", KbLevel.V1)).isFalse();
+        assertThat(catalog.readable(gold, "10086", KbLevel.V5)).isTrue();
+        assertThat(catalog.readable(gold, "vip", KbLevel.V3)).isTrue();  // 等级相等可见
+        assertThat(catalog.readable(basic, "10010", KbLevel.V1)).isTrue();
+
+        // eval/未登录（V0 fail-closed）：只见 V0 档
+        assertThat(catalog.readable(basic, null, null)).isTrue();
+        assertThat(catalog.readable(gold, null, null)).isFalse();
+
+        // 既有 2 参兼容口径 = V0 匿名（存量行为零回归）
+        assertThat(catalog.readable(basic, "anyone")).isTrue();
+        assertThat(catalog.readable(gold, "anyone")).isFalse();
+    }
+
+    @Test
+    void principalsExceptionOverridesInsufficientLevel() {
+        when(repository.findByStatusOrderByCreatedAtDesc(KbDocumentEntity.Status.ACTIVE))
+                .thenReturn(List.of(
+                        doc(KbNamespace.PUBLIC, "gold", "10010", KbLevel.V3, KbDocumentEntity.Status.ACTIVE),
+                        doc(KbNamespace.PRIVATE, "secret", "10010", KbLevel.V3, KbDocumentEntity.Status.ACTIVE)));
+        catalog.loadAll();
+
+        // 例外通道优先：名单命中直接放行（等级不足 V1 也可读）
+        assertThat(catalog.readable(managed(KbNamespace.PUBLIC, "gold", 1, 1).source(), "10010", KbLevel.V1)).isTrue();
+        assertThat(catalog.readable(managed(KbNamespace.PRIVATE, "secret", 1, 1).source(), "10010", KbLevel.V1)).isTrue();
+        // 名单不命中仍按等级/内外边界裁决
+        assertThat(catalog.readable(managed(KbNamespace.PRIVATE, "secret", 1, 1).source(), "10086", KbLevel.V5)).isFalse();
+    }
+
+    @Test
+    void filterReadableCarriesMemberLevel() {
+        when(repository.findByStatusOrderByCreatedAtDesc(KbDocumentEntity.Status.ACTIVE))
+                .thenReturn(List.of(
+                        doc(KbNamespace.PUBLIC, "basic", null, KbLevel.V0, KbDocumentEntity.Status.ACTIVE),
+                        doc(KbNamespace.PUBLIC, "gold", null, KbLevel.V3, KbDocumentEntity.Status.ACTIVE)));
+        catalog.loadAll();
+
+        List<RagFragment> pool = List.of(
+                managed(KbNamespace.PUBLIC, "basic", 1, 1),
+                managed(KbNamespace.PUBLIC, "gold", 1, 1));
+        assertThat(catalog.filterReadable(pool, "10010", KbLevel.V1)).hasSize(1);
+        assertThat(catalog.filterReadable(pool, "10086", KbLevel.V5)).hasSize(2);
+    }
 }

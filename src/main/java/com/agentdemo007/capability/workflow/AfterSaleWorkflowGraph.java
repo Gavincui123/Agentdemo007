@@ -163,9 +163,12 @@ public class AfterSaleWorkflowGraph implements AfterSaleWorkflow {
 
         graph.addNode(QUERY_POLICY_NODE, AsyncNodeAction.node_async(state -> {
             // 单入口 seam 政策源（复用 @Tool 同一 PolicyQueryService，决策 R）；
-            // 检索词 = standardQuery（缺失回退 rawInput）——真 RAG 政策源需用户问题原词检索（v5 seam 扩展）
+            // 检索词 = standardQuery（缺失回退 rawInput）——真 RAG 政策源需用户问题原词检索（v5 seam 扩展）。
+            // Phase 21 等级门：显式传请求主体（ctx.userId/memberLevel，图线程不依赖 ThreadLocal）——
+            // 不用 resolveUserId 兜底（baked 10086 会把匿名灌成 V5 fail-open），匿名按 V0 fail-closed。
             PipelineContext ctx = requireContext(state);
-            PolicyFragment policy = policyService.query(policyDomain, resolveQuery(ctx));
+            PolicyFragment policy = policyService.query(policyDomain, resolveQuery(ctx),
+                    com.agentdemo007.session.ChatSubject.of(ctx.userId(), ctx.memberLevel()));
             return Map.of(POLICY_KEY, policy);
         }));
 

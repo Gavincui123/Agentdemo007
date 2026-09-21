@@ -3,6 +3,8 @@ package com.agentdemo007.capability.business;
 import com.agentdemo007.capability.rag.RagFragment;
 import com.agentdemo007.capability.rag.RetrievalValidator;
 import com.agentdemo007.capability.rag.Retriever;
+import com.agentdemo007.capability.kb.KbCatalogService;
+import com.agentdemo007.session.ChatSubject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,6 +26,12 @@ import java.util.Optional;
  *
  * <p>与 {@link MockPolicyQueryService} 属性门控互斥（{@code vectorstore.type}=chroma|inmemory）；
  * 换实现不换 seam/调用方（3 个政策 @Tool + DAG query_policy 节点无感知）。
+ *
+ * <p><b>Phase 21 等级门（政策工具通道不绕行，2026-09-20 用户裁决）</b>：宽召回后、置信终闸前
+ * 按请求主体经 {@link KbCatalogService} 目录快照过滤——与 RagStep ①′ 同谓词同位置，不可见文档
+ * 不进候选（top1 从幸存者中选，而非"选中后再丢弃"）；匿名/V0 只出公开档，V1~V5 按
+ * 主体等级 ≥ 文档要求档 递升。主体经 seam 参数（DAG 节点显式传 ctx）或 {@code ChatSubjectHolder}
+ * （@Tool 通道窗口）到达，两路都收敛自 PipelineContext，窗外=ANONYMOUS fail-closed。
  */
 @Component
 @ConditionalOnProperty(prefix = "vectorstore", name = "type", havingValue = "chroma")
@@ -49,25 +57,36 @@ public class RagPolicyQueryService implements PolicyQueryService {
 
     private final Retriever retriever;
     private final RetrievalValidator validator;
+    private final KbCatalogService catalog;
     private final int recall;
 
     public RagPolicyQueryService(Retriever retriever,
                                  RetrievalValidator validator,
+                                 KbCatalogService catalog,
                                  @Value("${app.rag.recall-dense:24}") int recall) {
         this.retriever = retriever;
         this.validator = validator;
+        this.catalog = catalog;
         this.recall = recall;
     }
 
     @Override
-    public PolicyFragment query(PolicyDomain domain, String query) {
+    public PolicyFragment query(PolicyDomain domain, String query, ChatSubject subject) {
         if (domain == null) {
             return FALLBACK; // 幂等兜底不抛（§5.12 每步降级）
         }
+        ChatSubject viewer = (subject != null) ? subject : ChatSubject.ANONYMOUS;
         String effectiveQuery = (query != null && !query.isBlank())
                 ? query : DEFAULT_QUERIES.get(domain);
         List<RagFragment> pool = retriever.retrieve(effectiveQuery, recall);
-        List<RagFragment> gated = validator.validate(pool); // 置信度终闸继承（低置信不冒充政策）
+        // Phase 21 等级门：宽召回后、置信终闸前按主体过滤（与 RagStep ①′ 同谓词同位置——
+        // 不可见文档不进候选，top1 从幸存者中选而非"选中后再丢弃"）
+        List<RagFragment> readable = catalog.filterReadable(pool, viewer.userId(), viewer.memberLevel());
+        if (readable.size() != pool.size()) {
+            log.debug("政策RAG等级过滤：domain={} userId={} level={} {}→{} 条",
+                    domain, viewer.userId(), viewer.memberLevel(), pool.size(), readable.size());
+        }
+        List<RagFragment> gated = validator.validate(readable); // 置信度终闸继承（低置信不冒充政策）
         if (gated.isEmpty()) {
             // 工具通道观测：终闸全灭 → FALLBACK（与 RagStep 漏斗日志同风格，召回/过闸存量可见）
             log.debug("政策RAG走兜底：domain={} query='{}' 召回={}条 终闸过=0（低置信不冒充政策）",

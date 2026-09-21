@@ -7,6 +7,7 @@ import com.agentdemo007.common.pipeline.PipelineStep;
 import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.common.progress.ProgressEmitter;
+import com.agentdemo007.gateway.core.LlmResponse;
 import com.agentdemo007.gateway.core.StreamingReplyHandler;
 import com.agentdemo007.gateway.exception.LlmUnavailableException;
 import com.agentdemo007.gateway.exception.ModelSelectionException;
@@ -105,6 +106,7 @@ public class OutputStep implements PipelineStep {
         ProgressEmitter emitter = context.emitter();
         if (emitter != null && emitter != ProgressEmitter.NO_OP) {
             String[] finalReplyHolder = {null};
+            int[] usageTokens = {0};
             boolean[] errored = {false};
             CountDownLatch latch = new CountDownLatch(1);
             StreamingReplyHandler handler = new StreamingReplyHandler() {
@@ -115,6 +117,7 @@ public class OutputStep implements PipelineStep {
                 @Override
                 public void onCompleteResponse(String fullReply, int tokens) {
                     finalReplyHolder[0] = fullReply;
+                    usageTokens[0] = tokens;
                     latch.countDown();
                 }
                 @Override
@@ -142,6 +145,7 @@ public class OutputStep implements PipelineStep {
             }
             if (!errored[0] && finalReplyHolder[0] != null) {
                 context.setModelResponse(finalReplyHolder[0]);
+                context.setLastUsageTokens(usageTokens[0]); // Phase 22 T99：真实 usage 触发轨
                 context.setFinalReply(securityFilter.filter(finalReplyHolder[0]));
                 log.debug("流式输出完成：sessionId={}", context.sessionId());
                 return new StepOutcome.Proceed();
@@ -150,11 +154,14 @@ public class OutputStep implements PipelineStep {
         }
 
         try {
-            String rawOutput = llmService.chatRaw(prompt, context.intent());
-            context.setModelResponse(rawOutput);
+            // Phase 22 T99：终答主模型改走 detailed 出站拿真实 usage（tokens>0 写 ctx 触发轨，
+            // 0/缺失=引擎未回 usage → 不触发压缩，字符启发式窗口照常工作）
+            LlmResponse response = llmService.chatRawDetailed(prompt, context.intent(), "回答生成");
+            context.setModelResponse(response.content());
+            context.setLastUsageTokens(response.tokens());
 
             OutputSchema schema = schemaResolver.resolve(context.intent());
-            OutputResult result = gateway.process(rawOutput, schema, reAsk);
+            OutputResult result = gateway.process(response.content(), schema, reAsk);
             String clean = securityFilter.filter(result.text());
             context.setFinalReply(clean);
 

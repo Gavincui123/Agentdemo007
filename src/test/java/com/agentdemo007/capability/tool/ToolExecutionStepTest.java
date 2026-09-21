@@ -8,7 +8,10 @@ import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.intent.Intent;
 import com.agentdemo007.observability.AgentMetrics;
 import com.agentdemo007.resilience.ToolCircuitOpenException;
+import com.agentdemo007.session.ChatSubject;
+import com.agentdemo007.session.ChatSubjectHolder;
 import com.agentdemo007.session.model.StandardQuery;
+import com.agentdemo007.capability.kb.KbLevel;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -55,6 +58,32 @@ class ToolExecutionStepTest {
 
         assertThat(outcome).isInstanceOf(StepOutcome.Proceed.class);
         assertThat(ctx.toolResults()).containsExactly("7");
+    }
+
+    @Test
+    void policyToolWindow_carriesSubjectFromContext_andClearsAfterwards() {
+        // Phase 21 等级门接线钉死：工具执行窗口内 holder = ctx 主体（政策 @Tool 经此读取做等级过滤），
+        // 窗口结束 finally 清除——线程池复用下未设置读取必须收敛 ANONYMOUS（fail-closed）
+        java.util.concurrent.atomic.AtomicReference<ChatSubject> seenInWindow =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        when(executor.execute(anyString())).thenAnswer(inv -> {
+            seenInWindow.set(ChatSubjectHolder.current());
+            return ToolTurn.empty();
+        });
+        PipelineContext ctx = new PipelineContext("s1", "退款政策是什么");
+        ctx.setStandardQuery(StandardQuery.of("退款政策是什么"));
+        ctx.setUserId("10086");
+        ctx.setMemberLevel(KbLevel.V5);
+
+        try {
+            step.process(ctx);
+        } finally {
+            ChatSubjectHolder.clear(); // 防断言前异常残留污染同线程后续测试
+        }
+
+        assertThat(seenInWindow.get().userId()).isEqualTo("10086");
+        assertThat(seenInWindow.get().memberLevel()).isEqualTo(KbLevel.V5);
+        assertThat(ChatSubjectHolder.current()).isEqualTo(ChatSubject.ANONYMOUS);
     }
 
     @Test

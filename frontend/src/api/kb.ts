@@ -23,6 +23,7 @@ export interface KbIngestResult {
   docNo: string
   title: string
   namespace: 'PUBLIC' | 'PRIVATE'
+  requiredLevel: number
   version: number
   supersededVersion: number | null
   docType: string
@@ -41,6 +42,7 @@ export interface KbDocumentSummary {
   docNo: string
   title: string
   namespace: 'PUBLIC' | 'PRIVATE'
+  requiredLevel: number
   allowedPrincipals: string | null
   docType: string
   domain: string | null
@@ -69,15 +71,26 @@ export interface KbDocumentDetail {
   chunks: KbChunkView[]
 }
 
-/** 录入表单字段（文件单独传）。 */
+/** 录入表单字段（文件单独传）。requiredLevel 必选（Phase 21 三层保险第一层）。 */
 export interface KbIngestForm {
   docNo?: string
   title?: string
   namespace: 'PUBLIC' | 'PRIVATE'
+  requiredLevel: string
   allowedPrincipals?: string
   domain?: string
   versionNote?: string
 }
+
+/** 可见等级选项（对齐后端 KbLevel 枚举 V0~V5 有界词表）。 */
+export const KB_LEVEL_OPTIONS = [
+  { value: 'V0', label: 'V0 公开（匿名可见）' },
+  { value: 'V1', label: 'V1 注册客户' },
+  { value: 'V2', label: 'V2 白银会员' },
+  { value: 'V3', label: 'V3 黄金会员' },
+  { value: 'V4', label: 'V4 铂金会员' },
+  { value: 'V5', label: 'V5 全量' },
+] as const
 
 /** 支持的文件扩展名（与后端解析器注册表一致；输入框 accept 用）。 */
 export const KB_SUPPORTED_EXTENSIONS = '.md,.markdown,.txt,.html,.htm,.pdf,.docx,.xlsx,.xlsm,.csv,.tsv,.json'
@@ -88,6 +101,7 @@ function toFormData(file: File, form: KbIngestForm): FormData {
   if (form.docNo?.trim()) fd.append('docNo', form.docNo.trim())
   if (form.title?.trim()) fd.append('title', form.title.trim())
   fd.append('namespace', form.namespace)
+  fd.append('requiredLevel', form.requiredLevel)
   if (form.allowedPrincipals?.trim()) fd.append('allowedPrincipals', form.allowedPrincipals.trim())
   if (form.domain?.trim()) fd.append('domain', form.domain.trim())
   if (form.versionNote?.trim()) fd.append('versionNote', form.versionNote.trim())

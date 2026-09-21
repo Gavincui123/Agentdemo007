@@ -1,7 +1,7 @@
 # rag-ingest —— 多格式文档「清洗-切分-入库」流水线
 
 客服知识库 RAG 前置工具（纯 Python，不依赖 LlamaIndex）。完整教程见
-[docs/rag-corpus-ingestion-tutorial.md](../../docs/rag-corpus-ingestion-tutorial.md)。
+[docs/guides/rag-corpus-ingestion-tutorial.md](../../docs/guides/rag-corpus-ingestion-tutorial.md)。
 官方语料 23 个文件（20 md + 3 活动规则 JSON）灌库后 156 块。
 
 ## 快速开始

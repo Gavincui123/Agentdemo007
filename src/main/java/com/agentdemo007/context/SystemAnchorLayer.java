@@ -86,7 +86,10 @@ public class SystemAnchorLayer {
                 ? DEFAULT_SYSTEM_PROMPT : assembled;
     }
 
-    /** 运行时元数据块：会话摘要→当前意图→话题规则→当前时间（恒在），空值段跳过。 */
+    /** 运行时元数据块：会话摘要→当前意图→话题规则→运行时事实→拒答约束→当前时间（恒在），空值段跳过。
+     *  <p>Phase 22 T102 设计修订（2026-09-20 用户裁决）：用户画像<b>不再入 System 块</b>——
+     *  System 只保留 Agent 基础角色/工具规则/输出规范；画像经 {@link UserMemoryLayer}
+     *  以独立消息块（标签包裹 + 非指令声明）注入。 */
     private String buildRuntimeBlock(PipelineContext ctx) {
         StringBuilder sb = new StringBuilder();
         String summary = ctx.summary();

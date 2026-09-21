@@ -156,4 +156,4 @@
 
 这批改动没有引入新框架、新中间件（Lucene 除外，它是被证伪逼出来的），新增的每个组件都在回答同一个问题：**这条链路失败时，回退到哪？**仲裁器失败回退确定性状态机，Redis 副本失败回退 DB，配额存储失败 fail-open，业务对账失败 fail-closed。回退路径想清楚了，升级层才敢往上叠。
 
-> 相关阅读：[全链路延迟与稳定性调优（80.5s → 6.1s）](2026-09-16-agent-latency-stability-tuning.zh.md) · [语料清洗切分入库教程](../rag-corpus-ingestion-tutorial.md) · [部署指南（含闸口 Nacos 配置）](../../DEPLOY.md)
+> 相关阅读：[全链路延迟与稳定性调优（80.5s → 6.1s）](2026-09-16-agent-latency-stability-tuning.zh.md) · [语料清洗切分入库教程](../guides/rag-corpus-ingestion-tutorial.md) · [部署指南（含闸口 Nacos 配置）](../../DEPLOY.md)

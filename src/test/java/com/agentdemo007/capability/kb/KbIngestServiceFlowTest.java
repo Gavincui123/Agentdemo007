@@ -173,4 +173,33 @@ class KbIngestServiceFlowTest {
         assertThat(catalog.readable(source, "other-user")).isFalse();
         assertThat(catalog.readable(source, null)).isFalse(); // 匿名（eval）只见 PUBLIC
     }
+
+    // ---- Phase 21 客户等级可见性（T96 必填三层保险 + T97 快照等级过滤）----
+
+    @Test
+    void missingRequiredLevelExplicitlyRejected() {
+        // T96：接口层显式拒绝漏配（不静默补 V0——漏配是运营事故，必须显式失败）
+        assertThatThrownBy(() -> service.ingest(new KbIngestCommand("no-level.md", md("# 政策\n内容。"),
+                "no-level", null, KbNamespace.PUBLIC, null, null, null, "tester", null, false)))
+                .isInstanceOf(KbIngestService.KbIngestException.class)
+                .hasMessageContaining("可见等级必选");
+    }
+
+    @Test
+    void requiredLevelPersistsAndSnapshotFiltersByMemberLevel() {
+        // 带等级录入（V3 黄金会员档）：canonical 11 参构造
+        KbIngestResult r = service.ingest(new KbIngestCommand("gold.md", md("# 黄金档\n黄金会员专属权益。"),
+                "gold-doc", null, KbNamespace.PUBLIC, KbLevel.V3, null, "after_sale_policy",
+                "测试版本", "tester", false));
+        createdDocNos.add("gold-doc");
+
+        assertThat(r.requiredLevel()).isEqualTo(3);
+        assertThat(documents.findById(r.documentId()))
+                .get().satisfies(d -> assertThat(d.getRequiredLevel()).isEqualTo(3));
+
+        String source = KbSourceRef.source(KbSourceRef.docUid(KbNamespace.PUBLIC, "gold-doc"), 1, 1);
+        assertThat(catalog.readable(source, "10010", KbLevel.V1)).isFalse(); // V1 查 V3 不可见
+        assertThat(catalog.readable(source, "10086", KbLevel.V5)).isTrue();  // V5 全量可见
+        assertThat(catalog.readable(source, null, null)).isFalse();          // 匿名 fail-closed V0
+    }
 }

@@ -1,5 +1,6 @@
 package com.agentdemo007.capability.business;
 
+import com.agentdemo007.session.ChatSubject;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -36,7 +37,8 @@ public class MockPolicyQueryService implements PolicyQueryService {
             "兜底政策", false);
 
     @Override
-    public PolicyFragment query(PolicyDomain domain, String query) {
+    public PolicyFragment query(PolicyDomain domain, String query, ChatSubject subject) {
+        // 罐头数据无权限元数据——等级门不适用（真库 RagPolicyQueryService 按目录快照过滤，seam javadoc）
         if (domain == null) {
             return FALLBACK;
         }

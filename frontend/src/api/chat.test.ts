@@ -6,6 +6,7 @@ vi.mock('../utils/sse', () => ({ streamChat: vi.fn() }))
 import { http } from './http'
 import { parseChatResponse, sendChat, streamChatTurn, type ChatResponse } from './chat'
 import { streamChat } from '../utils/sse'
+import { setIdentity } from '../stores/identity'
 
 const streamChatMock = streamChat as unknown as ReturnType<typeof vi.fn>
 
@@ -79,6 +80,23 @@ describe('sendChat', () => {
     })
     await sendChat('hi')
     expect(http.post).toHaveBeenCalledWith('/chat', { message: 'hi' }, expect.anything())
+  })
+
+  it('carries demo identity userId in body when set（游客不传）', async () => {
+    ;(http.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+      sessionId: 's3',
+      reply: 'r',
+      degraded: false,
+      scenario: null,
+      citations: [],
+    })
+    setIdentity('10086')
+    try {
+      await sendChat('hi')
+      expect(http.post).toHaveBeenCalledWith('/chat', { message: 'hi', userId: '10086' }, expect.anything())
+    } finally {
+      setIdentity('') // 复位，防污染同文件后续用例
+    }
   })
 })
 

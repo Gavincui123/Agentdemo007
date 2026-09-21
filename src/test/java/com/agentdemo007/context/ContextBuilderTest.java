@@ -28,13 +28,14 @@ class ContextBuilderTest {
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2026-09-04T03:00:00Z"), ZoneOffset.ofHours(8));
 
-    /** 用真实三层构建的 merger 验证主路径端到端。 */
+    /** 用真实各层构建的 merger 验证主路径端到端。 */
     private ContextMerger realMerger() {
         return new ContextMerger(
                 new SystemAnchorLayer(
                         new SystemPromptAssembler(new LocalPromptSource(),
                                 SystemAnchorLayer.DEFAULT_SYSTEM_PROMPT),
                         FIXED_CLOCK),
+                new UserMemoryLayer(),
                 new ObjectiveDataLayer(),
                 new UserInstructionLayer(new PromptSanitizer()));
     }

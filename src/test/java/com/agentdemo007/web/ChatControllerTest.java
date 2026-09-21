@@ -12,6 +12,8 @@ import com.agentdemo007.persistence.mq.AuditProducer;
 import com.agentdemo007.persistence.mq.CapturingMessagePublisher;
 import com.agentdemo007.persistence.mq.ChatTurnFinalizer;
 import com.agentdemo007.persistence.mq.HistoryPersistProducer;
+import com.agentdemo007.session.MockMemberLevelService;
+import com.agentdemo007.session.profile.UserProfileService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.SyncTaskExecutor;
@@ -21,8 +23,11 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 
 /**
  * 对话控制器单测（Phase 12·对外收口终端 + Phase 13 异步持久化接线 + #136 SSE 真流式）。
@@ -54,7 +59,7 @@ class ChatControllerTest {
         };
         ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
                 new HistoryPersistProducer(publisher), new AuditProducer(publisher));
-        return new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor());
+        return new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor(), new MockMemberLevelService());
     }
 
     @Test
@@ -85,7 +90,8 @@ class ChatControllerTest {
         ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
                 new HistoryPersistProducer(publisher), new AuditProducer(publisher));
         ChatController controller = new ChatController(
-                stub, finalizer, objectMapper, new SyncTaskExecutor(), 120_000L, new AgentMetrics(registry));
+                stub, finalizer, objectMapper, new SyncTaskExecutor(), 120_000L, new AgentMetrics(registry),
+                new MockMemberLevelService(), null);
 
         controller.chat(new ChatRequest("sess-m", "你好"));
 
@@ -143,7 +149,7 @@ class ChatControllerTest {
         };
         ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
                 new HistoryPersistProducer(publisher), new AuditProducer(publisher));
-        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor());
+        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor(), new MockMemberLevelService());
 
         CapturingSseEmitter sse = new CapturingSseEmitter();
         controller.runToSse(sse, new ChatRequest("sess-2", "你好"));
@@ -190,7 +196,7 @@ class ChatControllerTest {
         };
         ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
                 new HistoryPersistProducer(publisher), new AuditProducer(publisher));
-        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor());
+        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor(), new MockMemberLevelService());
 
         CapturingSseEmitter sse = new CapturingSseEmitter();
         controller.runToSse(sse, new ChatRequest("sess-timing", "你好"));
@@ -213,7 +219,7 @@ class ChatControllerTest {
         };
         ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
                 new HistoryPersistProducer(publisher), new AuditProducer(publisher));
-        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor());
+        ChatController controller = new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor(), new MockMemberLevelService());
 
         CapturingSseEmitter sse = new CapturingSseEmitter();
         controller.runToSse(sse, new ChatRequest("sess-d", "你好"), "sess-d",
@@ -233,6 +239,50 @@ class ChatControllerTest {
         // 终端后置钩子被触发：会话持久化路由键收到 ChatTurnEvent（停 MQ→seam 假捕获，不连 broker→主接口 200）
         assertThat(publisher.publishCount()).isGreaterThanOrEqualTo(1);
         assertThat(publisher.published().get(0).getKey()).isEqualTo("session.persist");
+    }
+
+    @Test
+    void resetProfile_success_returnsResetTrue() {
+        // T102 遗忘权正常路径：结构化 200 + reset:true
+        ChatController controller = controllerWithProfileService(mock(UserProfileService.class));
+
+        UnifiedResponse resp = controller.resetProfile(new ChatRequest("sess-r", "忘记我", "u-9"));
+
+        assertThat(resp.code()).isEqualTo(0);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = (Map<String, Object>) resp.data();
+        assertThat(data.get("reset")).isEqualTo(true);
+        assertThat(data.get("userId")).isEqualTo("u-9");
+    }
+
+    @Test
+    void resetProfile_storeThrows_structuredFailure_notGlobal5xx() {
+        // 2026-09-21 review 修订：存储异常收口为 200 + {reset:false, reason}（不落全局 500，客户端可重试）
+        UserProfileService failing = mock(UserProfileService.class);
+        doThrow(new RuntimeException("redis down")).when(failing).reset("u-9");
+        ChatController controller = controllerWithProfileService(failing);
+
+        UnifiedResponse resp = controller.resetProfile(new ChatRequest("sess-r", "忘记我", "u-9"));
+
+        assertThat(resp.code()).isEqualTo(0); // HTTP 语义仍 200，失败在响应体结构化表达
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = (Map<String, Object>) resp.data();
+        assertThat(data.get("reset")).isEqualTo(false);
+        assertThat((String) data.get("reason")).contains("稍后重试");
+    }
+
+    /** 构造带画像服务的控制器（遗忘权端点两态测试用；其余依赖与 {@link #controller} 相同）。 */
+    private ChatController controllerWithProfileService(UserProfileService profileService) {
+        PipelineOrchestrator stub = new PipelineOrchestrator(List.of(), new DegradationPhraseCenter()) {
+            @Override
+            public PipelineResult run(PipelineContext context) {
+                return PipelineResult.ok("ok");
+            }
+        };
+        ChatTurnFinalizer finalizer = new ChatTurnFinalizer(
+                new HistoryPersistProducer(publisher), new AuditProducer(publisher));
+        return new ChatController(stub, finalizer, objectMapper, new SyncTaskExecutor(),
+                new MockMemberLevelService(), profileService);
     }
 
     /** 截获 {@link SseEmitter#send(SseEventBuilder)}：build() 返回 Set<DataWithMediaType>，逐项取 data 累积。 */

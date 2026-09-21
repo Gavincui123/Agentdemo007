@@ -915,6 +915,89 @@ frontend/
 
 ---
 
+### Phase 21 — RAG 知识分级可见性（客户等级 ABAC · 三轴拆分）
+> 衔接节点：卡 kb 目录快照权限模型（`KbCatalogService`·kb-ingest 任务3）之上；与前端录入表单改造并行。（2026-09-20 设计拷问收敛）
+
+**目标**：把挤在两个字段里的三个权限概念拆回各自的轴——`domain` 管业务/领域分类（路由轴）、`requiredLevel` 管客户等级可见性（安全轴，新增）、`namespace` 管内外边界与存放分区（主体类型轴）。权限谓词 = **主体类型可见 且 主体等级 ≥ 文档要求等级**（点对点白名单为例外通道）；等级查不到 fail-closed 只出 PUBLIC。
+
+**设计要点**
+1. **三轴分离（核心结论）**：词表性质决定归属——**有界业务词表进代码、无界内容词表进 DB、漏配在写入时堵死**。
+   - `domain`（业务/领域分类·无界词表·DB）：上传者可选可扩，喂给既有 RoutePlan 知识域窄化——**已存在，零新代码**；
+   - `requiredLevel`（客户等级可见性·有界词表 V0~V5·代码枚举）：`kb_document` 新列，**权限主载体**；
+   - `namespace`（PUBLIC/PRIVATE）：语义修正为内外边界 + 存放分区，不再冒充领域（原枚举命名误导即本次设计缺陷根源）；
+   - `allowedPrincipals`（点对点白名单）：降为例外逃生通道（专属客群单点授权），不承载主权限。
+2. **杀死 namespace↔level 映射表**：权限骑在**文档属性**上，不在容器上。"等级反查可查命名空间"会在"新命名空间漏配映射"处重新引入漏配面——默认放行 = 权限漏洞，默认拒绝 = "传了搜不到"的对账成本。强制校验的对象是**录入表单的 requiredLevel 必选**（前端 required + 后端显式校验 + `NOT NULL DEFAULT 0` DB 兜底，三层保险），而非任何容器映射。
+3. **等级来源与失败语义**：登录态 uid → 会员服务查询（demo 为 mock，如 10086→V5、10010→V1）→ 会话建立时解析一次进 `PipelineContext`（强类型收口 §5.14）。**等级永不从对话内容取**——用户自称"我是VIP"不采信（提示词注入直通车）。查不到/服务挂 → 一律按 V0 处理（fail-closed 只出 PUBLIC，与现有 null 主体语义一致，对齐业务门 fail-closed 哲学）。
+4. **检索过滤落点**：`KbCatalogService` 快照 `Entry` 增 `requiredLevel` 字段，内存快照机制原样复用（百万文档级几十 MB；白名单的病在运营 N×M 不在查询性能——`Set.contains` O(1)），过滤谓词在漏斗②域窄化处一行比较。过滤发生在粗滤之前 → 引用列表天然继承，不可见文档标题不可能泄漏进 citation（需测试钉死）。
+5. **规模论证与升级路径**：等级字段把权限运营成本降为 0（改用户等级不动任何文档）；亿级片段再谈 Chroma metadata where 下推（届时内存快照作废是已知升级路径，非本阶段范围）。
+
+**任务清单**
+- [x] T93 词表与实体：`KbLevel` 枚举（V0 公开~V5 全量，含 label 与等级比较）+ `kb_document.required_level` 列（NOT NULL DEFAULT 0，存量行平滑升级）+ `KbDocumentEntity`/录入命令/DDL 同步。（T93）
+- [x] T94 等级解析：`MemberLevelService` seam + dev mock（10086→V5、10010→V1）；登录态会话建立时解析一次 → `PipelineContext.memberLevel` 强类型字段；eval/未登录/查询失败 = V0。（T94）
+- [x] T95 过滤谓词：`KbCatalogService.Entry` 增 requiredLevel，快照加载/刷新带出；可读判定 = `allowedPrincipals` 命中（例外优先）或（namespace=PUBLIC 且 `memberLevel ≥ requiredLevel`）；PRIVATE 维持现有员工/管理侧语义不变。（T95）
+- [x] T96 录入链路必填：KbAdminController/KbIngestService/前端 kb 表单 requiredLevel 必选——DB 默认值仅作兜底，接口层显式拒绝漏配。（T96）
+- [x] T97 回归钉死：V1 会话查 V3 文档不可见；引用列表零泄漏（不可见文档标题不出现在 citation）；eval/未登录只见 V0；会员服务故障 fail-closed；存量 PUBLIC 文档检索行为零回归。（T97）
+
+**产出文件**：capability/kb/KbLevel.java（新）、KbCatalogService.java（Entry+谓词）、KbIngestService.java（必填校验）、admin/KbAdminController.java（参数校验）、persistence/entity/KbDocumentEntity.java、sql/schema.sql（required_level 列）、common/pipeline/PipelineContext.java（+memberLevel）、session/MemberLevelService.java（seam+mock）、前端 kb 录入表单（requiredLevel 必选）
+
+**验收标准**
+- 三个权限概念各归其轴：domain 管路由窄化、requiredLevel 管客户等级可见性、PUBLIC/PRIVATE 管内外边界；系统中不存在 namespace↔level 映射表。
+- 等级只来自登录态+会员服务，对话自称不采信；查不到 fail-closed 只出 PUBLIC。
+- 录入漏配 requiredLevel 不可能发生（前端必选 + 后端校验 + DB 默认值三层）。
+- V1 查 V3 不可见、citation 零泄漏、eval/未登录只见 V0；既有 PUBLIC 检索路径与快照机制零感知。
+
+**实现注记（落地与原设计差异，诚实记录）**
+- **T93 词表归属**：`KbLevel` 六档枚举（V0 公开/V1 注册客户/V2 白银/V3 黄金/V4 铂金/V5 全量）进代码（有界业务词表），`code()=ordinal()` 显式命名防位次漂移，`atLeast()` 即谓词核心比较；`fromCode(int)` 越界收敛 V0（快照加载边界坏数据 fail-closed 不放大权限）。DB 存 `required_level TINYINT NOT NULL DEFAULT 0`（int 非 enum 名——词表在代码，DB 只存档位）。**存量库升级**：schema.sql 是 CREATE IF NOT EXISTS 幂等脚本不会补列，已有 prod 库须手工 `ALTER TABLE kb_document ADD COLUMN required_level TINYINT NOT NULL DEFAULT 0;`（DDL 注释内已带此语句）；dev 走 Hibernate ddl-auto=update 自动补列。`KbDocumentEntity.create` 加 15 参全参装配器，旧 14 参委托 V0（既有调用方零改动）。
+- **T94 解析点与恢复链路**：`MemberLevelService` seam 契约"不抛异常、不返回 null，失败一律 V0"——调用方零防御、等级解析失败绝不阻塞主链也绝不放大权限；mock（10086→V5、10010→V1）经 `MemberLevelConfig` `@ConditionalOnMissingBean` 装配（镜像 HitlConfig 范式，prod 注册同类型 bean 即覆盖）。解析点两处：`ChatController.run`（/chat 与 /chat/stream 共同入口）+ `HitlResumeService.rebuildContext`——**恢复链路含 RagStep@660（postHitlSteps = @Order>610），快照不持久等级，恢复时刻重解析**（以会员服务当下为准；快照持久等级反而是旧值反漂移）。`PipelineContext.memberLevel` 缺省 V0（eval/未登录/直构步骤零感知）。
+- **T95 谓词与例外通道**：`Entry` 增 `requiredLevel`（快照机制原样复用）；判定序 = ①非托管来源恒放行（存量语义）→ ②`allowedPrincipals` 命中直接放行（**例外通道优先**——名单是点对点授权，不应被文档档位误伤）→ ③PUBLIC 按 `memberLevel.atLeast(requiredLevel)` → ④PRIVATE 名单不命中即 false（员工/管理侧语义不变）。注意此前 PUBLIC **恒** true（allowedPrincipals 对 PUBLIC 忽略），新语义下 PUBLIC+名单+等级不足 → 名单主体仍可见、外人按等级——例外通道语义统一到两轴。`filterReadable/readable` 3 参为正典，旧 2 参委托 V0 匿名口径（既有测试零改动）。RagStep ①′ 权限过滤位置不变（宽召回后、域窄化/粗滤/重排/终闸之前），citation 在抽取边界产生——**不可见文档进不了漏斗即进不了引用列表，零泄漏是结构性保证**（测试钉死而非拼接处小心）。
+- **T96 三层保险落点**：前端 `KbView.vue` 可见等级下拉**必选无默认**（强制显式选择，V0 也是一次 conscious choice）+ `validate()` 拦截；`KbAdminController` `requiredLevel` 参数（preview/ingest 同口径）blank/非法值话术化 `KbIngestException`→BAD_REQUEST；`KbIngestService.ingest` 对 `requiredLevel==null` 显式拒绝——**不静默补 V0**（漏配是运营事故，悄悄降级为公开可见=权限事故）。`KbIngestCommand` 加 canonical 11 参 + 旧 10 参委托 V0（flow 测试零改动）；`KbIngestResult`/`KbDocumentSummary`/前端类型增 `requiredLevel`，台账/预览徽标展示档位。
+- **T97 钉死清单**（15 新测，全量 1263 GREEN）：`RagStepMemberLevelTest`（V1 查 V3 只见基础档 + citation 不含 gold-faq source 与标题 + 全滤空走 RAG_SKIP groundingMiss=true 且引用零泄漏 + V5 全量可见）；`KbCatalogServiceTest`+3（等级谓词/例外通道越级放行/filterReadable 带等级）；`KbIngestServiceFlowTest`+2（漏配显式拒绝/等级落库+快照按等级过滤）；`KbLevelTest`×3 + `MockMemberLevelServiceTest`×2（demo 映射与 fail-closed）+ `PipelineContextMemberLevelTest`×2（缺省/归一 V0）。**测试基建教训**：RagFragment 3 参构造=BM25-only 口径（cosineScored=false），终闸"无口径不放行"会拦掉——漏斗测试片段须 9 参构造置 cosine 口径。
+- **反思级 review 补丁（2026-09-20，+1 测，全量 1264 GREEN）**：发现并发路径集成遗漏——`WorkflowExecutionStep.startConcurrent` 腿2 子上下文与腿1 clone 只搬 `userId` 不搬 `memberLevel`，而腿2 子管线（CapabilitySegmentRunner）含 RagStep@660 → 复合问题（退款+商品咨询）并发腿2 检索以缺省 V0 口径降级（fail-closed 无泄漏，但错杀付费会员）。修复：两处子上下文补 `setMemberLevel(context.memberLevel())` + `WorkflowExecutionStepTest` 新增并发两腿 `userId+memberLevel` 随行断言钉死。
+- **政策工具通道等级门（2026-09-20 用户裁决落地，原边界④收口）**：seam 正典改 `query(domain, query, ChatSubject)`（既有 2 参=缺省方法委托匿名 V0，fail-closed）；`RagPolicyQueryService` 注入 `KbCatalogService`，**宽召回后、置信终闸前**按主体过滤（与 RagStep ①′ 同谓词同位置——top1 从幸存者中选而非"选中后丢弃"；匿名/V0 只出公开档，V1~V5 递升）。主体两条到达路：DAG query_policy 节点显式传 `ChatSubject.of(ctx.userId(), ctx.memberLevel())`（图线程不依赖 ThreadLocal；**不用 resolveUserId 兜底**——baked 10086 会把匿名灌成 V5 fail-open）；@Tool 通道经 `ChatSubjectHolder`（ToolExecutionStep 进入执行前从 ctx 写入、finally 清除；超时模式默认 10s 开启，工具在池化守护线程执行，`ResilientToolExecutor.callOnce` 跳变前快照、执行时回放并清除——MDC/RequestContextHolder 在线程池/SSE 工作线程下都不成立）。mock 罐头数据无权限元数据，等级门不适用（demo inmemory 默认演示口径不变）。新测 +6（全量 1270 GREEN）：RagPolicyQueryServiceTest（V1 查 V3 托管政策不可见且 top1 落基础档/V5 全量/匿名 fail-closed/滤空 FALLBACK 零泄漏）×2 + ChatSubjectHolderTest（holder 收敛与归一 + seam 2 参=匿名）×3 + ToolExecutionStepTest 窗口随行/清除钉死 ×1。
+- **已知边界**：①等级词表增档（V6+）= 代码变更（有界词表进代码的代价，接受——等级体系本身是业务不变量的慢变量）；②亿级片段升级路径 = Chroma metadata where 下推替代内存快照（设计要点5，非本阶段）；③HITL 恢复以恢复时刻等级为准，挂起期间降档的边界场景（挂起 V3→恢复前降 V1）按 fail-closed 收敛，属正确方向；④**等级门信任边界 = ChatRequest.userId 客户端声明**（无服务端身份绑定；用户已确认 demo 阶段身份即 mock 数据仅为展示——前端提供演示身份切换器（游客 V0 / 10010 V1 / 10012 V2 / 10013 V3 / 10014 V4 / 10086 V5，随对话请求带 userId，切换即重置会话），API 亦可显式传任意 uid），真鉴权接入后收口（ChatRequest javadoc 已有"迭代后真鉴权强制非空"记录）。
+
+---
+
+### Phase 22 — 会话记忆分层（滚动摘要 + token 预算窗口 + 用户画像长期记忆）
+> 衔接节点：卡 Phase 3/6（Redis 会话缓存 + 会话管理层）与 Phase 21（画像权限自洽裁决）之上；与 Phase 21 可并行。（2026-09-20 设计拷问收敛）
+
+**目标**：把"会话历史 TTL 内无限增长 + 摘要锚点仅首轮"升级为三层记忆——L1 原文窗口（最近 N 轮）/ L2 滚动摘要（滑出窗口轮次的压缩）/ L3 用户画像（跨会话长期记忆），配合既有 L0 业务键记忆（`WorkflowSubmissionRegistry`）形成双层分工。铁律：**任何一层记忆的失败不产生 5xx、不增加首字延迟**（压缩只发生在终局异步路径）。
+
+**设计要点**
+1. **分层分工**：L1 原文窗口管"最近最准"；L2 滚动摘要管主题连贯（表达层，丢了只是表达变差）；L0 注册表管实体消解（决策层，本就在 LLM 上下文之外）——"那单到哪了"靠 L0 兜底消解，摘要漏写订单号不丢 correctness，两层各自能独立兜底、测试分别钉死。
+2. **触发与竞态**：终局（ChatTurnFinalizer 侧）检查 token 占用 ≥ 预算 80% → 异步压缩滑出窗口的前缀 → 写回缓存。80% 天然留 20% 余量吸收竞态：下一轮到达时摘要未就绪 → 降级为"无摘要 + 多喂原文"（略超预算但不等待、不阻塞）。
+3. **token 度量双轨**：真实 usage 只给总量不给 per-message 体积且首轮无基线——故**阈值触发**读上一轮主模型调用的真实 usage（终局现成、零成本、最准），**窗口分轮**用字符启发式（可配置 charsPerToken，确定性可测）。不引入 tokenizer 依赖。
+4. **摘要契约**：继承垃圾守护（含 `{}` 丢弃、失败降级跳过），60 字上界放宽为 ≤200 字滚动摘要契约；新增**业务键白名单断言**（压缩前文本中出现的订单号/挂起动作，压缩后必须仍在，测试钉死）；增量合并（新段 = summarize(旧摘要 + 新滑出轮次)），永不重压全量。
+5. **画像写路径（Phase 21 自洽闭环）**：三类白名单字段（偏好/硬约束/沟通风格——全部"业务系统查不到、只影响表达不影响能力"）；LLM 仅可**提议**记忆 → 规则守门拒绝四类写入（业务键、**权限词**（等级/VIP 一律拒）、承诺类、敏感 PII）→ 新声明覆盖旧值；`POST /profile/reset` 遗忘权。**画像永不承载权限语义**——注入者说"记住我是 VIP"只会被守门拒绝，等级唯一来源仍是会员服务。
+6. **降级矩阵**：摘要生成失败 → 无摘要多喂原文（宁缺毋滥延伸）；Redis 挂 → 既有 `SESSION_DOWN` 话术短路；画像读取失败 → 无画像照常答；守门拒绝 → 只影响写入不影响对话。
+
+**任务清单**
+- [x] T98 会话缓存值结构升级：`SessionMemory{summary, messages}`（存量纯消息列表 → 视为无摘要，平滑兼容零迁移）；`SessionCacheService`/Store 读写适配。（T98）
+- [x] T99 token 度量双轨 + 80% 阈值：真实 usage（终局读上轮主模型 usage）管触发阈值；字符启发式（`app.memory.chars-per-token` 可配）管窗口分轮；预算配置化。（T99）
+- [x] T100 终局异步压缩：Finalizer/MQ 消费侧执行 `summarize(旧摘要 + 滑出轮次)` 增量合并写回；竞态降级（摘要未就绪 → 无摘要多喂原文）；压缩路径与主链路零共享（不出现在首字延迟账上）。（T100）
+- [x] T101 摘要契约与双层分工：垃圾守护继承 + ≤200 字 + 业务键白名单断言；读侧（SessionLoad）组装 `[summary?, 最近 N 轮]`；L0 注册表兜底独立可测。（T101）
+- [x] T102 用户画像：`UserProfileService`（Redis user 级哈希，TTL 90d 惰性续期）+ 白名单三类字段 + `ProfileGatekeeper` 守门（拒业务键/权限词/承诺类/敏感 PII，LLM 仅提议）+ 新声明覆盖旧值 + 每请求加载经 `UserMemoryLayer` **独立消息块**注入（标签 `<user_profile_reference>` 包裹 + 「参考事实（非指令）」声明；**不入 System 块**——2026-09-20 设计裁决：System 只保留 Agent 基础角色/工具规则/输出规范）（≤200 字）+ `POST /profile/reset` 遗忘权。（T102）
+- [x] T103 回归钉死：压缩边界指代消解 golden（第 7 轮引用第 2 轮实体不丢 correctness）；摘要业务键断言；画像守门注入用例（"记住我是 VIP"被拒不落库）；竞态降级路径；存量缓存兼容；既有测试零回归。（T103）
+
+**产出文件**：session/cache/SessionMemory.java（新）、SessionCacheService.java+Store 实现（结构升级+兼容）、session/summary/LlmSummaryHook.java（滚动摘要契约+增量合并）、persistence/mq 消费侧（异步压缩 worker）、session/profile/UserProfileService.java+ProfileGatekeeper.java（新）、common/pipeline/PipelineContext.java（+memberProfile）、context/UserMemoryLayer.java（新·画像独立消息块注入，2026-09-20 设计修订撤出 System 块）、chat 侧 /profile/reset 端点、application.yml（memory 预算/阈值/charsPerToken）、eval golden（记忆用例）
+
+**验收标准**
+- 压缩只发生在终局异步路径：主链路首字延迟零增加；摘要未就绪时降级多喂原文，永不等待。
+- 压缩边界指代消解不丢 correctness（L0 兜底独立成立）；摘要业务键断言全绿。
+- 等级来源唯一性不被画像破坏（权限词写入被守门拒绝，Phase 21 裁决回归通过）；遗忘权可用。
+- 任何记忆层失败均按降级矩阵落地，零 5xx；存量会话缓存平滑升级零迁移。
+
+**实现注记（落地与原设计差异，诚实记录）**
+- **T98 值结构升级与存量兼容**：新增 `session/cache/SessionMemory`（record，防御性拷贝；`ofMessages` 存量视图工厂），`ChatMessageCodec` 升级为 memory 编解码——decode 首字符分流（`[`=旧格式纯消息数组→无摘要记忆；`{`=新格式 `{summary, messages}`），encode 恒写新格式，**存量 Redis 值零迁移平滑升级**（首个压缩周期自然补齐摘要）。`SessionCacheStore` 接口三方法（load→SessionMemory / append 摘要保留语义 / save 整体替换）；`SessionCacheService` 的 `load/append` 签名保持存量口径（`load`=memory.messages()），新增 `loadMemory/save`——上游调用方（SessionLoadStep/ChatTurnFinalizer 之外的零改动）。InMemory store 用 `ConcurrentMap.compute` 做原子 append（保留既有摘要）。
+- **T99 双轨落地**：真实 usage 轨 = `OutputStep` 终答主模型出站改走新增的 `ChatLlmService.chatRawDetailed`（阻塞路径返回 `LlmResponse` 携带 tokens；流式路径 `onCompleteResponse` 原生带 tokens）→ 写 `PipelineContext.lastUsageTokens`（null=话术短路/取消轮/引擎未回 usage→不触发）。字符启发式轨 = `SessionWindower`（`windowBudgetTokens × charsPerToken` 换算字符预算，从尾按轮累计，**只在轮边界裁剪不拆 User/Ai 对**；最后一轮恒保留——宁多喂不空喂；遗留乱序值退化为全保留）。读侧取窗与压缩分轮**共用同一 bean**（RedisConfig 装配，口径一致）。配置 `app.memory.*`（预算 1200 / charsPerToken 2.0 / threshold 0.8 / summaryMaxChars 200，全部环境变量可覆盖）。
+- **T100 压缩执行体**：`SessionCompactionService`（@Component，专用守护单线程 `memory-compaction`，@PreDestroy 收口）——触发判定（usage ≥ 预算×阈值）在终局钩子同步判，压缩提交异步执行（**与主链路零共享，不出现在首字延迟账上**）；压缩主体 = 读→窗口分轮→滑出前缀→`summarizeRolling(旧摘要, 滑出轮次)` 增量合并（永不重压全量）→业务键补齐→写回；**竞态合并** = 读值时记 baseCount，写回收口为 `SessionCacheService.mergeSave`（2026-09-21 review 修订：同会话条纹锁内原子load→merge→save，append 与压缩写回互斥——根治 Redis 读-改-写竞态下 append 的 get/set 横跨 save 用旧值覆盖压缩写回的窗口；LLM 摘要调用留锁外，临界区微秒级零首字延迟影响；JVM 内完备，**多实例部署为残余边界**——真多实例需 WATCH/Lua/list 重构，demo 单实例不涉及）；单线程执行器天然串行化同会话多次压缩。**触发口径注记**：usage = 主模型 totalTokenCount（prompt+completion 全量，含 system/RAG/工具/回答），比 L1 窗口预算（仅历史段）口径宽——阈值 960 触发偏早属保守方向，滑出为空自然 no-op，勿误读为历史段 token 数。`ChatTurnFinalizer.finalizeTurn` 新增两路终局记忆维护（历史追加成功才触发；取消轮全跳过）。
+- **T101 摘要契约**：`SummaryHook.summarizeRolling`（default empty，既有 fake 零改动）；`LlmSummaryHook` 实现滚动摘要（垃圾守护继承：花括号碎片；上界 60→200 字，201 字即丢弃，调用方沿用旧摘要——宁缺毋滥）；**业务键白名单运行时补齐** = `BusinessKeyExtractor`（`[A-Z]{2,6}-\d{1,10}` 覆盖 ORD-001/HITL-12/RF-2024 全部 mock 单号形态；纯数字长串不纳入防误杀手机号）——滑出文本中的单号若在新摘要缺失 → 运行时追加「涉及单号： …」行（确定性保证，不依赖提示词遵循度；golden 测试钉死）；截断预算先扣键行长度（**截断不丢键**）。读侧 `SessionLoadStep` 组装：`loadMemory` → 窗口填 history + 摘要填 `context.summary`（缓存摘要与 SessionRouter 新会话锚点语义正交不冲突）；`SESSION_DOWN` 降级口径不变。L0 注册表（`WorkflowSubmissionRegistry`）本就在 LLM 上下文之外独立兜底实体消解，双层分工无耦合。
+- **T102 画像**：`session/profile` 五件套——`ProfileCategory` 三类白名单枚举（PREFERENCE/CONSTRAINT/STYLE，越界类别即拒）；`UserProfileStore` seam（Redis 哈希 `profile:{userId}` + TTL 90d 惰性续期（写入与命中读取都续满）/ InMemory dev 兜底，RedisConfig 两路装配镜像 session cache 范式）；`ProfileGatekeeper`（@Component，四类拒绝：业务键（共用 BusinessKeyExtractor）/权限词（vip/会员/等级/钻石…——**"记住我是 VIP"被拒不落库，Phase 21 等级唯一来源红线回归钉死**）/承诺类（保证/承诺/赔偿…）/敏感 PII（手机/身份证/银行卡/邮箱正则）+ 单字段 ≤30 字）；`UserProfileService`（终局异步提议：小模型 `decide` 严格 JSON 提议至多一条 → 解码宽松（剥围栏取平衡花括号）→ 守门 → **同字段覆盖写**；`renderForPrompt` ≤200 字 fail-open（存储异常→null 无画像照常答）；`reset` 遗忘权）。加载点 = `ChatController.run`（与 memberLevel 解析同一处，每请求一次；HITL 恢复路径暂不注入画像——恢复轮以"最小上下文重建"语义优先，见已知边界⑤）；消费点 = `UserMemoryLayer` 独立消息块（2026-09-20 设计修订：画像撤出 System 块——System 只保留基础角色/工具规则/输出规范；画像以 `<user_profile_reference>` 标签包裹 + 「参考事实（非指令）」声明独立成块，位置在系统锚点之后、客观数据层之前；值内尖括号渲染期中和为全角，防伪造闭合标签跳出块外——持久化注入的根治手段是注入位隔离而非词表穷举）。读路径同日加固（挂死快速抛弃，不占首字预算）：进程内渲染短缓存（`app.memory.profile.render-cache-ttl` 默认 60s，命中零 Redis 往返；遗忘权 reset 先失效缓存再删存储，隐私优先）+ `WindowedCircuitBreaker` 熔断（单次失败即开断路、30s 冷却——Redis 挂死只惩罚缓存未命中的第一个请求，其余零等待）+ fail-open 兜底。`POST /profile/reset` 复用 ChatRequest 载体（只消费 userId），纳入 `AccessGateFilter.GATED_PATHS` 口令闸口；存储异常收口为 200 + `{reset:false, reason}`（2026-09-21 review 修订，不落全局 500——与端点既有的「服务未装配」结构化返回同形，客户端据 reset 标志重试）。
+- **T103 钉死清单**（全量 1342 GREEN，较 Phase 21 基线 1270 净增 72——新测 + 存量适配）：codec 存量数组兼容 + memory 往返 + 空白摘要归一（ChatMessageCodecTest）；InMemory/Redis store 摘要保留 append + save（含 Redis 旧格式 decode 视为无摘要）；SessionCacheService loadMemory/save 异常包装；SessionWindower 不拆对/末轮恒保留/遗留退化/预算换算 ×6；SessionCompactionService 阈值边界 959/960/禁用/缺 usage + 增量合并入参断言 + 业务键补齐 + LLM 失败沿用旧摘要键仍钉 + 无摘要无键丢弃 + 截断不丢键 + **压缩期间并发 append 拼回**（ScriptedHook 回调时机模拟竞态，注入直接执行器确定性同步）×10 + LlmSummaryHook 滚动契约 ×6 + BusinessKeyExtractorTest ×7 + ProfileGatekeeperTest 四类拒绝/放行/长度 ×8 + UserProfileServiceTest 提议覆盖写/VIP 注入不落库/none 跳过/LLM 失败静默/游客跳过/渲染 ≤200/fail-open/遗忘权 ×9 + PipelineContextMemoryTest 归一化 ×3 + SessionLoadStep 摘要装载 ×2 + OutputStep usage 双路采集 ×2 + ChatTurnFinalizer 记忆维护触发/取消跳过 ×3。存量测试适配：SessionLoadStepTest/InMemory/Redis/SessionCacheService/ChatControllerTest（构造器签名随接口升级，断言语义零变化）。**顺手加固**：CircuitBreakerGuardTest 冷却期用例由固定 sleep 改轮询等待（墙钟回拨/调度抖动下偶发不足，2026-09-21 全量跑实测一次后加固；冷却拒绝不 recordFailure，重试安全）。
+- **已知边界**：①压缩触发依赖主模型回传 usage（部分引擎流式缺失则该轮不触发，下轮补；字符窗口照常兜底）；②提示词摘要漏写单号由运行时键补齐兜底，但键值**只保字面**（如 ORD-001），指代消解的语义正确性仍由 L0 注册表与最近原文窗口共同兜底；③画像提议每真实成轮一次小模型调用（成本与轮次线性，可用 `app.memory.profile.enabled=false` 关闭）；④`/profile/reset` 的 userId 为客户端声明（与 ChatRequest.userId 同信任边界，真鉴权接入后收口）；⑤HITL 恢复轮暂不注入画像与压缩触发依赖的 usage（恢复轮 lastUsageTokens 缺省 null 自然跳过压缩；画像注入待恢复链路需要个性化时再评估）；⑥渲染缓存 TTL（默认 60s）内画像后端变更不可见——画像低频变更可接受，遗忘权 reset 即时失效缓存不留旧值；⑦读路径熔断冷却期（30s）内画像整体缺失（快速抛弃，宁缺勿等——表达层降级，不占首字预算）。
+
+---
+
 ## 7. 验证策略总览
 | 阶段 | 核心验证项 |
 |---|---|
@@ -938,6 +1021,8 @@ frontend/
 | 18 | AgentScope 引擎 /chat 全链路跑通、三引擎输出等价、ReAct 自纠正收口 TOOL_FAILURE、HITL Permission 拦截、按官方文档对接接入、可回退 |
 | 19 | 管理台调权热生效、模型配置表、HITL 工单操作、评测报告指标正确、仪表盘实时刷新、traceId 链路检索、单 jar 部署、鉴权生效 |
 | 20 | 改写保 original query 无业务结论、精确词走 Hybrid 精确通道命中、RAG 片段时效标注过时不冒充当前、近期优先 |
+| 21 | 等级只来自登录态会员服务（对话自称不采信）、V1 查 V3 不可见、citation 零泄漏、录入漏配被三层校验堵死、fail-closed 只出 PUBLIC、存量 PUBLIC 零回归 |
+| 22 | 压缩仅发生在终局异步路径（主链路零延迟增加）、竞态降级无摘要多喂原文、摘要业务键断言、画像守门拒绝权限词写入且遗忘权可用、存量会话缓存兼容零迁移 |
 
 ---
 

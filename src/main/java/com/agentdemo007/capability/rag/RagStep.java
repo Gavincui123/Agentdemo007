@@ -117,14 +117,15 @@ public class RagStep implements PipelineStep {
             // ① 宽召回（topK 参数 = 稠密召回预算；融合池不截断，人人可携带检索置信度）
             List<RagFragment> pool = retriever.retrieve(query, recallDense);
             int recalled = pool.size();
-            // ①′ 知识库权限过滤（[[kb-ingest-design]] 任务3）：命名空间/权限/版本活性过滤——
-            //     无权片段在进漏斗前出局（不占粗滤/重排/注入名额）；私有片段对无权主体如同不存在。
+            // ①′ 知识库权限过滤（[[kb-ingest-design]] 任务3 · Phase 21 三轴谓词）：命名空间/
+            //     客户等级/点对点白名单/版本活性过滤——无权片段在进漏斗前出局（不占粗滤/重排/
+            //     注入名额）；私有或越级片段对无权主体如同不存在（引用列表天然零泄漏）。
             com.agentdemo007.capability.kb.KbCatalogService kbCatalog = this.catalog;
             if (kbCatalog != null) {
-                List<RagFragment> readable = kbCatalog.filterReadable(pool, context.userId());
+                List<RagFragment> readable = kbCatalog.filterReadable(pool, context.userId(), context.memberLevel());
                 if (readable.size() != pool.size()) {
-                    log.debug("知识库权限过滤：sessionId={} userId={} {}→{} 条（无权/下架片段出局）",
-                            context.sessionId(), context.userId(), pool.size(), readable.size());
+                    log.debug("知识库权限过滤：sessionId={} userId={} level={} {}→{} 条（无权/下架片段出局）",
+                            context.sessionId(), context.userId(), context.memberLevel(), pool.size(), readable.size());
                     pool = readable;
                 }
             }

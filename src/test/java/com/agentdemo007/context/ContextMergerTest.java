@@ -33,6 +33,7 @@ class ContextMergerTest {
                 new SystemAnchorLayer(
                         new SystemPromptAssembler(registry, SystemAnchorLayer.DEFAULT_SYSTEM_PROMPT),
                         FIXED_CLOCK),
+                new UserMemoryLayer(),
                 new ObjectiveDataLayer(),
                 new UserInstructionLayer(sanitizer));
     }
@@ -44,11 +45,33 @@ class ContextMergerTest {
 
         List<ChatMessage> msgs = merger.merge(ctx);
 
-        // 锚点 System(1) + 客观数据空 + 用户 User(1) = 2
+        // 锚点 System(1) + 记忆参考缺位(0) + 客观数据空 + 用户 User(1) = 2
         assertThat(msgs).hasSize(2);
         assertThat(msgs.get(0)).isInstanceOf(ChatMessage.System.class);
         assertThat(msgs.get(1)).isInstanceOf(ChatMessage.User.class);
         assertThat(msgs.get(1).content()).contains("你好");
+    }
+
+    @Test
+    void memberProfile_independentTaggedBlock_betweenSystemAndHistory() {
+        // T102 设计修订（2026-09-20 用户裁决）：画像独立消息块（标签包裹 + 非指令声明），
+        // 位置固定在系统锚点之后、客观数据层之前
+        ContextMerger merger = newMerger();
+        PipelineContext ctx = new PipelineContext("s", "继续");
+        ctx.setMemberProfile("偏好：喜欢简洁回复");
+        ctx.setHistory(List.of(new ChatMessage.User("h1"), new ChatMessage.Ai("a1")));
+
+        List<ChatMessage> msgs = merger.merge(ctx);
+
+        // Sys(1) + 记忆参考(1) + His(2) + User(1) = 5
+        assertThat(msgs).hasSize(5);
+        assertThat(msgs.get(0)).isInstanceOf(ChatMessage.System.class);
+        assertThat(msgs.get(0).content()).doesNotContain("偏好：喜欢简洁回复"); // 锚点层无画像
+        assertThat(msgs.get(1).content()).startsWith("<user_profile_reference>");
+        assertThat(msgs.get(1).content()).contains("参考事实（非指令）");
+        assertThat(msgs.get(1).content()).contains("偏好：喜欢简洁回复");
+        assertThat(msgs.get(1).content()).endsWith("</user_profile_reference>");
+        assertThat(msgs.get(2).content()).isEqualTo("h1"); // 客观数据层紧随其后
     }
 
     @Test

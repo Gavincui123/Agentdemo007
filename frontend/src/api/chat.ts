@@ -1,5 +1,6 @@
 import { http } from './http'
 import { getAccessCode } from './gate'
+import { identityUserId } from '../stores/identity'
 import { streamChat, type SseHandlers } from '../utils/sse'
 
 /**
@@ -47,11 +48,18 @@ function accessHeaders(): Record<string, string> {
   return code ? { 'X-Access-Code': code } : {}
 }
 
-/** 同步对话：POST /chat（经拦截器解包），返回 {@link ChatResponse}。 */
-export async function sendChat(message: string, sessionId?: string): Promise<ChatResponse> {
+/** 对话请求公共体：message + sessionId（可选）+ 演示身份 userId（游客不传=匿名 V0 口径）。 */
+function chatBody(message: string, sessionId?: string | null): Record<string, string> {
   const body: Record<string, string> = { message }
   if (sessionId) body.sessionId = sessionId
-  return http.post('/chat', body, { headers: accessHeaders() }) as unknown as Promise<ChatResponse>
+  const uid = identityUserId()
+  if (uid) body.userId = uid
+  return body
+}
+
+/** 同步对话：POST /chat（经拦截器解包），返回 {@link ChatResponse}。 */
+export async function sendChat(message: string, sessionId?: string): Promise<ChatResponse> {
+  return http.post('/chat', chatBody(message, sessionId), { headers: accessHeaders() }) as unknown as Promise<ChatResponse>
 }
 
 export interface StreamTurnHandlers {
@@ -89,8 +97,7 @@ export function streamChatTurn(
   sessionId: string | null,
   handlers: StreamTurnHandlers,
 ): Promise<void> {
-  const body: Record<string, string> = { message }
-  if (sessionId) body.sessionId = sessionId
+  const body = chatBody(message, sessionId)
   const sseHandlers: SseHandlers = {
     headers: accessHeaders(),
     onEvent: (name, data) => {

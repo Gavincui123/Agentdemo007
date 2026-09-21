@@ -1,5 +1,6 @@
 package com.agentdemo007.common.pipeline;
 
+import com.agentdemo007.capability.kb.KbLevel;
 import com.agentdemo007.capability.plan.RoutePlan;
 import com.agentdemo007.capability.tool.ToolCallResult;
 import com.agentdemo007.common.degradation.DegradationScenario;
@@ -41,6 +42,15 @@ public class PipelineContext {
     /** [[business-tools-workflow-dag]] per-request 当前用户 id（前端 ChatRequest 传入；工作流校验订单归属用）。
      *  null=无鉴权上下文（eval/未传），图 baked currentUserId 兜底——迭代后真鉴权强制非空。 */
     private String userId;
+    // Phase 21 客户等级可见性（§5.14 强类型收口）：登录态 uid + 会员服务解析（请求入口/HITL 恢复
+    // 各解析一次），永不从对话内容取（自称 VIP 不采信）；缺省 V0 fail-closed（eval/未登录只出 PUBLIC）。
+    private KbLevel memberLevel = KbLevel.V0;
+    // Phase 22 用户画像（L3 长期记忆·表达层）：请求入口加载一次进 System 运行时块（≤200 字）。
+    // 永不承载权限语义（等级唯一来源=memberLevel）；画像读取失败→null（无画像照常答，不阻塞）。
+    private String memberProfile;
+    // Phase 22 记忆压缩触发源（T99 双轨之"真实 usage"轨）：本轮主模型（终答）调用的 usage 总 token。
+    // 终局钩子据此判压缩触发（≥ 预算×阈值）；null=本轮无主模型调用（话术短路/取消/降级）→ 不触发。
+    private Integer lastUsageTokens;
     private String finalReply;
     private boolean degraded;
     private DegradationScenario scenario;
@@ -134,6 +144,45 @@ public class PipelineContext {
 
     public void setUserId(String userId) {
         this.userId = userId;
+    }
+
+    /**
+     * 客户等级（Phase 21 安全轴）：来源只有登录态 + 会员服务（{@code MemberLevelService}），
+     * 缺省 {@link KbLevel#V0}（fail-closed：eval/未登录/解析失败只出 PUBLIC 级知识）。
+     */
+    public KbLevel memberLevel() {
+        return memberLevel;
+    }
+
+    /** 注入会员等级（null 归一 V0，消费方零防御；等级永不从对话内容取）。 */
+    public void setMemberLevel(KbLevel memberLevel) {
+        this.memberLevel = (memberLevel != null) ? memberLevel : KbLevel.V0;
+    }
+
+    /**
+     * 用户画像文本（Phase 22 L3 长期记忆·表达层；请求入口加载，System 运行时块渲染）。
+     * null/空白=无画像（读取失败/未配置/新用户——无画像照常答）。
+     */
+    public String memberProfile() {
+        return memberProfile;
+    }
+
+    /** 注入用户画像（空白归一 null；永不承载权限语义）。 */
+    public void setMemberProfile(String memberProfile) {
+        this.memberProfile = (memberProfile != null && !memberProfile.isBlank()) ? memberProfile : null;
+    }
+
+    /**
+     * 本轮主模型 usage 总 token（Phase 22 T99 真实 usage 轨；OutputStep 终答调用后写入）。
+     * null=本轮无主模型调用（话术短路/取消/降级）——终局钩子据此跳过压缩触发。
+     */
+    public Integer lastUsageTokens() {
+        return lastUsageTokens;
+    }
+
+    /** 注入主模型 usage（null/负值归一 null）。 */
+    public void setLastUsageTokens(Integer lastUsageTokens) {
+        this.lastUsageTokens = (lastUsageTokens != null && lastUsageTokens > 0) ? lastUsageTokens : null;
     }
 
     public String finalReply() {
