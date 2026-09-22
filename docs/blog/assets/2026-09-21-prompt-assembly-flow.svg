@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="470" viewBox="0 0 880 470" font-family="'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+  </defs>
+  <rect width="880" height="470" fill="#ffffff"/>
+  <text x="16" y="30" font-size="17" font-weight="bold" fill="#0f172a">提示词装配与拼接：双源热更 → 六步装配 → 四层固定顺序</text>
+
+  <!-- dual source -->
+  <rect x="16" y="56" width="220" height="86" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="126" y="78" font-size="12.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">Nacos 控制台 · AI 提示词模板</text>
+  <text x="126" y="98" font-size="10.5" fill="#334155" text-anchor="middle">key = system-prompt-segments</text>
+  <text x="126" y="116" font-size="10" fill="#64748b" text-anchor="middle">gRPC push 热推送 · SDK md5 缓存</text>
+  <text x="126" y="131" font-size="10" fill="#64748b" text-anchor="middle">prod：app.prompt.source=nacos</text>
+
+  <rect x="16" y="166" width="220" height="62" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="126" y="190" font-size="12.5" font-weight="bold" fill="#334155" text-anchor="middle">LocalPromptSource（dev）</text>
+  <text x="126" y="210" font-size="10" fill="#64748b" text-anchor="middle">内存固定模板 · eval 确定性</text>
+
+  <rect x="272" y="110" width="150" height="62" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="347" y="136" font-size="12" font-weight="bold" fill="#1e3a8a" text-anchor="middle">PromptRegistry</text>
+  <text x="347" y="156" font-size="9.5" fill="#64748b" text-anchor="middle">Nacos 异常 → empty 降级</text>
+
+  <line x1="236" y1="99" x2="269" y2="128" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="236" y1="197" x2="269" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <!-- assembler -->
+  <rect x="470" y="56" width="284" height="176" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="612" y="79" font-size="12.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">SystemPromptAssembler（每请求解析）</text>
+  <text x="488" y="104" font-size="11" fill="#334155">① 取片段清单（YAML 数组）</text>
+  <text x="488" y="123" font-size="11" fill="#334155">② SnakeYAML 解析</text>
+  <text x="488" y="142" font-size="11" fill="#334155">③ scene 选取：all / 粗 / 细意图</text>
+  <text x="488" y="161" font-size="11" fill="#334155">④ sort 降序（并列保配置序）</text>
+  <text x="488" y="180" font-size="11" fill="#334155">⑤ "\n\n" 拼接 → ⑥ {{var}} 渲染</text>
+  <text x="488" y="203" font-size="10" fill="#64748b">缺失变量替换为空串，防占位符污染下游</text>
+  <text x="488" y="221" font-size="10" fill="#64748b">注册表拉取失败 / 解析失败 / 零命中 → 兜底 ↓</text>
+
+  <line x1="422" y1="141" x2="466" y2="141" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="470" y="248" width="284" height="52" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="612" y="270" font-size="11.5" font-weight="bold" fill="#92400e" text-anchor="middle">DEFAULT_SYSTEM_PROMPT 兜底</text>
+  <text x="612" y="289" font-size="10.5" fill="#92400e" text-anchor="middle">不是通用助手，是同一个客服（人格对齐）</text>
+  <line x1="632" y1="232" x2="632" y2="245" stroke="#d97706" stroke-width="1.5" marker-end="url(#arb)"/>
+
+  <!-- merger sequence -->
+  <text x="16" y="336" font-size="14" font-weight="bold" fill="#0f172a">ContextMerger 固定拼接顺序（顺序即语义，ContextMergerTest 逐位钉死）</text>
+
+  <rect x="16" y="352" width="172" height="72" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="105" y="375" font-size="12" font-weight="bold" fill="#1e3a8a" text-anchor="middle">① 系统锚点层</text>
+  <text x="105" y="395" font-size="9.5" fill="#64748b" text-anchor="middle">Sys（角色/规则/输出规范）</text>
+  <text x="105" y="411" font-size="9.5" fill="#64748b" text-anchor="middle">+ Runtime（摘要/意图/约束）</text>
+
+  <rect x="201" y="352" width="172" height="72" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="287" y="375" font-size="12" font-weight="bold" fill="#14532d" text-anchor="middle">② 记忆参考块（画像）</text>
+  <text x="287" y="395" font-size="9.5" fill="#15803d" text-anchor="middle">user_profile_reference 标签</text>
+  <text x="287" y="411" font-size="9.5" fill="#15803d" text-anchor="middle">非指令声明 · 尖括号中和</text>
+
+  <rect x="386" y="352" width="172" height="72" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5"/>
+  <text x="472" y="375" font-size="12" font-weight="bold" fill="#334155" text-anchor="middle">③ 客观数据层</text>
+  <text x="472" y="395" font-size="9.5" fill="#64748b" text-anchor="middle">His → RAG（隔离头）</text>
+  <text x="472" y="411" font-size="9.5" fill="#64748b" text-anchor="middle">→ Tool（结果/无数据/异常）</text>
+
+  <rect x="571" y="352" width="172" height="72" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="657" y="375" font-size="12" font-weight="bold" fill="#1e3a8a" text-anchor="middle">④ 用户指令层</text>
+  <text x="657" y="395" font-size="9.5" fill="#64748b" text-anchor="middle">用户原文（定界符包裹）</text>
+  <text x="657" y="411" font-size="9.5" fill="#64748b" text-anchor="middle">改写产物必不入本层</text>
+
+  <line x1="188" y1="388" x2="198" y2="388" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="373" y1="388" x2="383" y2="388" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="558" y1="388" x2="568" y2="388" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <text x="16" y="452" font-size="11" fill="#475569">层与层不串污染：系统指令、长期记忆参考、客观数据、用户输入各自隔离——画像撤出 System 块为 2026-09-20 注入位隔离裁决。</text>
+</svg>

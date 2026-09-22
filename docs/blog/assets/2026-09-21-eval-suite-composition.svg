@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 420" font-family="'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif">
+  <rect x="0" y="0" width="880" height="420" fill="#ffffff"/>
+  <text x="440" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">评测黄金集：默认套件的 9 个 stage · 63 例</text>
+  <text x="440" y="56" text-anchor="middle" font-size="12" fill="#64748b">每例 = 输入 + expected 强类型断言集 · 另有 6 个 stage 文件（41 例）在资源目录、未入默认套件</text>
+
+  <!-- 比例：12 例 = 480px → 40px/例；条起点 x=210 -->
+  <g stroke="#e2e8f0" stroke-width="1">
+    <line x1="290" y1="76" x2="290" y2="330"/>
+    <line x1="370" y1="76" x2="370" y2="330"/>
+    <line x1="450" y1="76" x2="450" y2="330"/>
+    <line x1="530" y1="76" x2="530" y2="330"/>
+    <line x1="610" y1="76" x2="610" y2="330"/>
+    <line x1="690" y1="76" x2="690" y2="330"/>
+  </g>
+
+  <text x="200" y="97" text-anchor="end" font-size="12.5" font-weight="600" fill="#334155">audit 审计</text>
+  <rect x="210" y="82" width="480" height="24" rx="4" fill="#2563eb"/>
+  <text x="698" y="99" font-size="12.5" font-weight="700" fill="#2563eb">12</text>
+
+  <text x="200" y="137" text-anchor="end" font-size="12.5" font-weight="600" fill="#334155">degradation 降级</text>
+  <rect x="210" y="122" width="400" height="24" rx="4" fill="#2563eb"/>
+  <text x="618" y="139" font-size="12.5" font-weight="700" fill="#2563eb">10</text>
+
+  <text x="200" y="177" text-anchor="end" font-size="12.5" font-weight="600" fill="#334155">injection 注入拦截</text>
+  <rect x="210" y="162" width="320" height="24" rx="4" fill="#dc2626"/>
+  <text x="538" y="179" font-size="12.5" font-weight="700" fill="#dc2626">8</text>
+
+  <text x="200" y="217" text-anchor="end" font-size="12.5" font-weight="600" fill="#334155">rag 检索增强</text>
+  <rect x="210" y="202" width="280" height="24" rx="4" fill="#16a34a"/>
+  <text x="498" y="219" font-size="12.5" font-weight="700" fill="#16a34a">7</text>
+
+  <text x="200" y="257" text-anchor="end" font-size="12.5" font-weight="600" fill="#334155">intent 意图 · routing 路由</text>
+  <rect x="210" y="242" width="240" height="24" rx="4" fill="#d97706"/>
+  <text x="458" y="259" font-size="12.5" font-weight="700" fill="#d97706">6 + 6</text>
+
+  <text x="200" y="297" text-anchor="end" font-size="12.5" font-weight="600" fill="#334155">tool 工具 · hitl 人工介入</text>
+  <rect x="210" y="282" width="240" height="24" rx="4" fill="#d97706"/>
+  <text x="458" y="299" font-size="12.5" font-weight="700" fill="#d97706">6 + 5</text>
+
+  <text x="200" y="337" text-anchor="end" font-size="12.5" font-weight="600" fill="#334155">rag-redteam 红队毒片</text>
+  <rect x="210" y="322" width="120" height="24" rx="4" fill="#dc2626"/>
+  <text x="338" y="339" font-size="12.5" font-weight="700" fill="#dc2626">3</text>
+
+  <text x="440" y="384" text-anchor="middle" font-size="12" fill="#64748b">未入默认套件的 stage：understanding(7) / context(8) / langgraph(8) / resilience(8) / gateway(5) / output(5)</text>
+  <text x="440" y="404" text-anchor="middle" font-size="12" fill="#94a3b8">——其中 understanding 的 und-006/007 正是 hollow eval 事故后新增的可断言用例（见 §二）</text>
+</svg>

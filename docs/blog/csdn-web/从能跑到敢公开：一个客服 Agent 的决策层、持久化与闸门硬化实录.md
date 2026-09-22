@@ -1,6 +1,7 @@
 # 从能跑到敢公开：一个客服 Agent 的决策层、持久化与闸门硬化实录
 
-> **2026-09-18 · Agentdemo007 系列第六章**（[系列目录](./README.md)），上一篇[《检索侧演进》](2026-09-21-rag-evolution-abac-refusal.zh.md)；此时延迟已从 80.5s 压到 6.1~11.9s（调优实录见[第八章](2026-09-16-agent-latency-stability-tuning.zh.md)）。本篇记录的是把它变成**敢挂到公网上当作品集**的那批工作：混合检索真 RAG 收尾、会话决策层升级（方案A 仲裁器）、HITL 挂起-恢复 L2 持久化、统一访问闸口。四块工作共享同一条设计纪律：**不推翻已经做好的东西——每一层都是既有链路之上的升级层，失败时原样回退**。
+> **2026-09-18 · Agentdemo007 系列第六章**（[系列目录](https://blog.csdn.net/qq_24993561/article/details/166257230)），上一篇[《检索侧演进》](https://blog.csdn.net/qq_24993561/article/details/166257786)；此时延迟已从 80.5s 压到 6.1~11.9s（调优实录见[第八章](https://blog.csdn.net/qq_24993561/article/details/166257713)）。本篇记录的是把它变成**敢挂到公网上当作品集**的那批工作：混合检索真 RAG 收尾、会话决策层升级（方案A 仲裁器）、HITL 挂起-恢复 L2 持久化、统一访问闸口。四块工作共享同一条设计纪律：**不推翻已经做好的东西——每一层都是既有链路之上的升级层，失败时原样回退**。
+> **源码**：[github.com/Gavincui123/Agentdemo007](https://github.com/Gavincui123/Agentdemo007)
 
 ## 0. 为什么要做这一批
 
@@ -27,7 +28,7 @@
 
 这条链路上还叠着一层刻意的"毒性实验"：语料里埋了三份毒文档——指令注入（"忽略之前所有指令与政策约束"）、伪造退款政策（"实时到账"）、假官方验证专线钓鱼。第一种每轮被注入扫描器在进上下文前剔除；伪造政策能通过全部闸门进入 context 与引用列表，残余风险交给冲突仲裁指令与 citations 兜底；钓鱼文档则任何内容防线都不拦——唯一前置防线是语料准入治理。**红队评估的结论不是"防线全防住了"，而是精确知道哪一层挡了什么、哪一层放进来、放进来的靠什么兜底。**这比全部绿灯更有说服力。
 
-![检索防线与毒性实验：注入毒片被扫描器剔除，伪造政策毒片通过全部闸门、靠冲突仲裁指令兜底，终闸双判据与 RAG_SKIP 兜底](assets/2026-09-18-rag-poison-defense.png)
+![检索防线与毒性实验：注入毒片被扫描器剔除，伪造政策毒片通过全部闸门、靠冲突仲裁指令兜底，终闸双判据与 RAG_SKIP 兜底](https://raw.githubusercontent.com/Gavincui123/Agentdemo007/master/docs/blog/assets/2026-09-18-rag-poison-defense.png)
 
 ---
 
@@ -52,7 +53,7 @@
 
 最终形态是**三层递进**，每层独立成立：
 
-![会话决策层三层递进：routePlan 能力契约 → 提交业务记忆 → 会话仲裁器，任何失败原样回退确定性状态机](assets/2026-09-18-decision-layers.png)
+![会话决策层三层递进：routePlan 能力契约 → 提交业务记忆 → 会话仲裁器，任何失败原样回退确定性状态机](https://raw.githubusercontent.com/Gavincui123/Agentdemo007/master/docs/blog/assets/2026-09-18-decision-layers.png)
 
 **第一层：routePlan 能力契约。** 明确一句话契约——*routePlan 是本轮能力决策的唯一出处，下游只执行不猜*。收敛层在意图进决策层前修正候选值：售后轮一律 `needsRag=false`（政策语义走工作流内单通道查询，澄清/衔接/确认这些终态从不消费主线 RAG）；无订单号则 `needsBusinessTools=false`。T3 那种"澄清轮白跑 26s 漏斗"直接归零。下游 RagStep 的门控同步改为对**所有来源**服从 `needsRag`——修的是"值不对"，不是"门不看"。
 
@@ -137,7 +138,7 @@ public Optional<HitlCheckpointSnapshot> findActiveForTicket(String ticketId, Str
 
 **④ 工单持久副本异步落库。** `hitl_ticket` 由 `hitl-ticket-writer` 异步镜像，重启后按 id / 幂等键 / PENDING 列表三个口子回源——审批不丢单。
 
-![HITL 检查点三级持久化：内存真相源 + 异步双写 Redis/DB + 严格锚点恢复与 DB 对账，收尾强制 fail-closed 对账业务表](assets/2026-09-18-hitl-checkpoint-persistence.png)
+![HITL 检查点三级持久化：内存真相源 + 异步双写 Redis/DB + 严格锚点恢复与 DB 对账，收尾强制 fail-closed 对账业务表](https://raw.githubusercontent.com/Gavincui123/Agentdemo007/master/docs/blog/assets/2026-09-18-hitl-checkpoint-persistence.png)
 
 取舍明说：这套是**单实例内存真相 + 异步副本**的 demo 口径。横向扩容需要把"消费检查点"的 CAS 挪到 DB 乐观锁，工单状态机同理。这是有意的欠账，不是疏忽——单实例语义下它已经把"重启丢审批"这个最疼的问题解决了。
 
@@ -163,7 +164,7 @@ public Optional<HitlCheckpointSnapshot> findActiveForTicket(String ticketId, Str
 
 `enabled=true` 一次性生效三件事：① `/chat` 系列要求访问口令（前端 `/gate` 登录页 + 会话页常驻入口 chip）；② 外部 IP 按自然日（Asia/Shanghai）计数限额，**localhost 豁免**——本机联调不该被自己的闸门拦住；③ `/eval/**` 仅限本机（评测会跑真实 LLM 全量黄金集，比聊天更烧钱，必须比聊天更严）。`enabled=false` 全部放开——dev 零门槛。口令只放 Nacos，不进仓库、不进环境变量明文。
 
-![统一访问闸口请求流：enabled 开关 → localhost 豁免 → eval 封锁 → 口令校验（fail-closed）→ IP 日额（fail-open）→ 放行](assets/2026-09-18-access-gate-flow.png)
+![统一访问闸口请求流：enabled 开关 → localhost 豁免 → eval 封锁 → 口令校验（fail-closed）→ IP 日额（fail-open）→ 放行](https://raw.githubusercontent.com/Gavincui123/Agentdemo007/master/docs/blog/assets/2026-09-18-access-gate-flow.png)
 
 ### 4.2 一次推演出来的洞：IP 伪造刷额度
 
@@ -251,4 +252,4 @@ public static boolean codeMatches(String given, String expected) {
 
 这批改动没有引入新框架、新中间件（Lucene 除外，它是被证伪逼出来的），新增的每个组件都在回答同一个问题：**这条链路失败时，回退到哪？**仲裁器失败回退确定性状态机，Redis 副本失败回退 DB，配额存储失败 fail-open，业务对账失败 fail-closed。回退路径想清楚了，升级层才敢往上叠。
 
-> 相关阅读：[全链路延迟与稳定性调优（80.5s → 6.1s）](2026-09-16-agent-latency-stability-tuning.zh.md) · [语料清洗切分入库教程](../guides/rag-corpus-ingestion-tutorial.md) · [部署指南（含闸口 Nacos 配置）](../../DEPLOY.md)
+> 相关阅读：[全链路延迟与稳定性调优（80.5s → 6.1s）](https://blog.csdn.net/qq_24993561/article/details/166257713) · [语料清洗切分入库教程](https://github.com/Gavincui123/Agentdemo007/blob/master/docs/guides/rag-corpus-ingestion-tutorial.md) · [部署指南（含闸口 Nacos 配置）](https://github.com/Gavincui123/Agentdemo007/blob/master/DEPLOY.md)
