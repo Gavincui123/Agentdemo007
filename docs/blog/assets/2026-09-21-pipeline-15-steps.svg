@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="480" viewBox="0 0 880 480" font-family="'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+  <rect width="880" height="480" fill="#ffffff"/>
+  <text x="16" y="30" font-size="17" font-weight="bold" fill="#0f172a">15 步流水线泳道：@Order 即执行顺序（四态出口）</text>
+
+  <rect x="16" y="42" width="13" height="13" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="34" y="53" font-size="11" fill="#334155">Proceed 继续</text>
+  <rect x="116" y="42" width="13" height="13" rx="3" fill="#dc2626" opacity="0.85"/>
+  <text x="134" y="53" font-size="11" fill="#334155">ShortCircuit 话术短路（零 LLM）</text>
+  <rect x="316" y="42" width="13" height="13" rx="3" fill="#d97706" opacity="0.85"/>
+  <text x="334" y="53" font-size="11" fill="#334155">Degrade 降级推进</text>
+  <rect x="466" y="42" width="13" height="13" rx="3" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="484" y="53" font-size="11" fill="#334155">Retry：图编排自循环（线性下等价 Proceed）</text>
+
+  <!-- Row 1 -->
+  <rect x="16" y="74" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="105" y="93" font-size="11.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">SessionLoadStep</text>
+  <text x="105" y="109" font-size="9.5" fill="#475569" text-anchor="middle">@Order 100 · 会话</text>
+  <text x="105" y="124" font-size="10" fill="#64748b" text-anchor="middle">装载 L1 窗口 + L2 摘要</text>
+
+  <rect x="200" y="74" width="170" height="60" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="285" y="93" font-size="11.5" font-weight="bold" fill="#7f1d1d" text-anchor="middle">KeywordTriageStep</text>
+  <text x="285" y="109" font-size="9.5" fill="#475569" text-anchor="middle">@Order 150 · 意图</text>
+  <text x="285" y="124" font-size="10" fill="#64748b" text-anchor="middle">关键词分诊 + 注入检测</text>
+
+  <rect x="384" y="74" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="469" y="93" font-size="11.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">SessionRouter</text>
+  <text x="469" y="109" font-size="9.5" fill="#475569" text-anchor="middle">@Order 200 · 会话</text>
+  <text x="469" y="124" font-size="10" fill="#64748b" text-anchor="middle">锚点 / 衔接判定</text>
+
+  <rect x="568" y="74" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="653" y="93" font-size="11.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">QueryRewriter</text>
+  <text x="653" y="109" font-size="9.5" fill="#475569" text-anchor="middle">@Order 300 · 会话</text>
+  <text x="653" y="124" font-size="10" fill="#64748b" text-anchor="middle">指代消解改写</text>
+
+  <line x1="186" y1="104" x2="197" y2="104" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="370" y1="104" x2="381" y2="104" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="554" y1="104" x2="565" y2="104" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="16" y="138" width="172" height="15" rx="3" fill="#fef3c7"/>
+  <text x="22" y="149" font-size="9" fill="#92400e">Redis 故障 → SESSION_DOWN 降级</text>
+  <rect x="200" y="138" width="160" height="15" rx="3" fill="#fee2e2"/>
+  <text x="216" y="149" font-size="9" fill="#991b1b">注入命中 → INJECTION 短路</text>
+
+  <!-- Row 2 -->
+  <rect x="16" y="166" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="105" y="185" font-size="11" font-weight="bold" fill="#1e3a8a" text-anchor="middle">RewriteQualityChecker</text>
+  <text x="105" y="201" font-size="9.5" fill="#475569" text-anchor="middle">@Order 400 · 会话</text>
+  <text x="105" y="216" font-size="10" fill="#64748b" text-anchor="middle">改写质检不过则回退</text>
+
+  <rect x="200" y="166" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="285" y="185" font-size="11" font-weight="bold" fill="#1e3a8a" text-anchor="middle">IntentRecognitionStep</text>
+  <text x="285" y="201" font-size="9.5" fill="#475569" text-anchor="middle">@Order 500 · 意图</text>
+  <text x="285" y="216" font-size="10" fill="#64748b" text-anchor="middle">结构化分类提示词</text>
+
+  <rect x="384" y="166" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="469" y="185" font-size="11.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">RouteDispatchStep</text>
+  <text x="469" y="201" font-size="9.5" fill="#475569" text-anchor="middle">@Order 600 · 路由</text>
+  <text x="469" y="216" font-size="10" fill="#64748b" text-anchor="middle">四类模型路由</text>
+
+  <rect x="568" y="166" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="653" y="185" font-size="11.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">RoutePlanStep</text>
+  <text x="653" y="201" font-size="9.5" fill="#475569" text-anchor="middle">@Order 605 · 路由</text>
+  <text x="653" y="216" font-size="10" fill="#64748b" text-anchor="middle">结构化路径计划</text>
+
+  <line x1="186" y1="196" x2="197" y2="196" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="370" y1="196" x2="381" y2="196" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="554" y1="196" x2="565" y2="196" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <!-- Row 3 -->
+  <rect x="16" y="258" width="170" height="60" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="105" y="277" font-size="11.5" font-weight="bold" fill="#7f1d1d" text-anchor="middle">HitlStep</text>
+  <text x="105" y="293" font-size="9.5" fill="#475569" text-anchor="middle">@Order 610 · 能力</text>
+  <text x="105" y="308" font-size="10" fill="#64748b" text-anchor="middle">高风险 HITL 建单</text>
+
+  <rect x="200" y="258" width="170" height="60" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="285" y="277" font-size="11" font-weight="bold" fill="#7f1d1d" text-anchor="middle">ToolExecutionStep</text>
+  <text x="285" y="293" font-size="9.5" fill="#475569" text-anchor="middle">@Order 650 · 能力</text>
+  <text x="285" y="308" font-size="10" fill="#64748b" text-anchor="middle">有界 Agent loop</text>
+
+  <rect x="384" y="258" width="170" height="60" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="469" y="277" font-size="11.5" font-weight="bold" fill="#92400e" text-anchor="middle">RagStep</text>
+  <text x="469" y="293" font-size="9.5" fill="#475569" text-anchor="middle">@Order 660 · 能力</text>
+  <text x="469" y="308" font-size="10" fill="#64748b" text-anchor="middle">七段检索漏斗</text>
+
+  <rect x="568" y="258" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="653" y="277" font-size="11" font-weight="bold" fill="#1e3a8a" text-anchor="middle">WorkflowExecutionStep</text>
+  <text x="653" y="293" font-size="9.5" fill="#475569" text-anchor="middle">@Order 670 · 能力</text>
+  <text x="653" y="308" font-size="10" fill="#64748b" text-anchor="middle">售后固定子图（5 节点）</text>
+
+  <line x1="186" y1="288" x2="197" y2="288" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="370" y1="288" x2="381" y2="288" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="554" y1="288" x2="565" y2="288" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="16" y="322" width="160" height="15" rx="3" fill="#fee2e2"/>
+  <text x="22" y="333" font-size="9" fill="#991b1b">HITL_TIMEOUT 短路（幂等四态）</text>
+  <rect x="200" y="322" width="160" height="15" rx="3" fill="#fee2e2"/>
+  <text x="216" y="333" font-size="9" fill="#991b1b">自纠正耗尽 → TOOL_FAILURE</text>
+  <rect x="384" y="322" width="140" height="15" rx="3" fill="#fef3c7"/>
+  <text x="410" y="333" font-size="9" fill="#92400e">终闸不过 → RAG_SKIP</text>
+
+  <!-- Row 4 -->
+  <rect x="16" y="350" width="170" height="60" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="105" y="369" font-size="11.5" font-weight="bold" fill="#7f1d1d" text-anchor="middle">RefusalGateStep</text>
+  <text x="105" y="385" font-size="9.5" fill="#475569" text-anchor="middle">@Order 690 · 能力</text>
+  <text x="105" y="400" font-size="10" fill="#64748b" text-anchor="middle">无依据拒答裁决</text>
+
+  <rect x="200" y="350" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="285" y="369" font-size="11.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">ContextBuilder</text>
+  <text x="285" y="385" font-size="9.5" fill="#475569" text-anchor="middle">@Order 700 · 上下文</text>
+  <text x="285" y="400" font-size="10" fill="#64748b" text-anchor="middle">四层提示词装配</text>
+
+  <rect x="384" y="350" width="170" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="469" y="369" font-size="11.5" font-weight="bold" fill="#1e3a8a" text-anchor="middle">OutputStep</text>
+  <text x="469" y="385" font-size="9.5" fill="#475569" text-anchor="middle">@Order 800 · 输出</text>
+  <text x="469" y="400" font-size="10" fill="#64748b" text-anchor="middle">流式 / 阻塞回答</text>
+
+  <rect x="568" y="350" width="170" height="60" rx="6" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="653" y="369" font-size="11" font-weight="bold" fill="#334155" text-anchor="middle">ChatTurnFinalizer</text>
+  <text x="653" y="385" font-size="9.5" fill="#475569" text-anchor="middle">@Order 之外 · 终局旁路</text>
+  <text x="653" y="400" font-size="10" fill="#64748b" text-anchor="middle">异步落库/审计/记忆维护</text>
+
+  <line x1="186" y1="380" x2="197" y2="380" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="370" y1="380" x2="381" y2="380" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="554" y1="380" x2="565" y2="380" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="16" y="414" width="158" height="15" rx="3" fill="#fee2e2"/>
+  <text x="22" y="425" font-size="9" fill="#991b1b">groundingMiss → 拒答话术</text>
+  <rect x="384" y="414" width="170" height="15" rx="3" fill="#fef3c7"/>
+  <text x="390" y="425" font-size="9" fill="#92400e">SSE 120s 超时 → PIPELINE_TIMEOUT</text>
+
+  <text x="16" y="456" font-size="11" fill="#475569">任何步骤抛异常 → PipelineOrchestrator 收口到 INTERNAL 话术（全局兜底，不抛 5xx）；Finalizer 失败不影响本轮答复。</text>
+</svg>

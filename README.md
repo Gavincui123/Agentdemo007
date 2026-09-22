@@ -219,7 +219,7 @@ docs/              # 文档（分类管理，导航见 docs/README.md）
 ├── design/        # 专项设计规格（specs）与 TDD 实现计划（plans）
 ├── guides/        # 实操指南：部署实录 / 语料入库教程
 ├── reports/       # 交付报告与实验记录
-└── blog/          # 调优技术博客 + 生产化硬化实录
+└── blog/          # 十二章工程实录系列（每章配 SVG 图 + 真实代码，多数章节另附 mermaid 图）
 DEPLOY.md          # 单 jar 部署指南（prod MySQL/Redis/MQ 接入 + 闸口发布清单）
 docker-compose.yml# 中间件本地编排（MySQL / pgvector 等）
 ```
@@ -262,16 +262,26 @@ docker-compose.yml# 中间件本地编排（MySQL / pgvector 等）
 |------|------|
 | [docs/design/](docs/design/)（specs ×3 · plans ×4） | 专项设计规格与 TDD 实现计划（工作流 DAG / 分段提示词 / P0 意图切换 / 前端设计） |
 
-**博客实录（docs/blog/）**
+**博客实录（docs/blog/）—— 系列《Agentdemo007 工程实录》十二章（[系列目录](docs/blog/README.md)：设计篇 1-2 → 攻坚篇 3-9 → 交付篇 10-12）**
 
 | 文档 | 内容 |
 |------|------|
-| [博客一：全链路延迟与稳定性调优](docs/blog/2026-09-16-agent-latency-stability-tuning.zh.md)（[EN](docs/blog/2026-09-16-agent-latency-stability-tuning.en.md)） | 80.5s → 6.1s 实录：超时预算治理、SSE 生命周期、意图漂移修复 |
-| [博客二：决策层/持久化/闸门硬化](docs/blog/2026-09-18-decision-arbiter-hitl-l2-access-gate.zh.md) | 会话仲裁器、HITL L2 持久化、统一访问闸口 |
+| [第一章：设计理念与总体架构](docs/blog/2026-09-21-design-philosophy-architecture.zh.md) | 七层蓝图、15 步流水线、四态出口、选型答辩 |
+| [第二章：提示词工程体系](docs/blog/2026-09-21-prompt-engineering-system.zh.md) | 分段装配、防漂移、注入位纪律、双源热更 |
+| [第三章：模型网关与韧性治理](docs/blog/2026-09-21-model-gateway-resilience.zh.md) | 异常分诊四层、重试归属地、熔断阈值光谱、有界 Agent loop |
+| [第四章：会话记忆分层](docs/blog/2026-09-21-session-memory-layering.zh.md) | L1 窗口/L2 滚动摘要/L3 画像、读-改-写竞态收口、注入位隔离与读路径三道防线 |
+| [第五章：检索侧演进](docs/blog/2026-09-21-rag-evolution-abac-refusal.zh.md) | Hybrid 融合、时效治理、知识分级 ABAC、拒答四层与红队 |
+| [第六章：决策层/持久化/闸门硬化](docs/blog/2026-09-18-decision-arbiter-hitl-l2-access-gate.zh.md) | 会话仲裁器、HITL L2 持久化、统一访问闸口 |
+| [第七章：业务工具与售后工作流 DAG](docs/blog/2026-09-21-business-tools-workflow-dag.zh.md) | 方向纠偏、mock↔DB 对账对齐、审批=事件、建单幂等四态 |
+| [第八章：全链路延迟与稳定性调优](docs/blog/2026-09-16-agent-latency-stability-tuning.zh.md)（[EN](docs/blog/2026-09-16-agent-latency-stability-tuning.en.md)） | 80.5s → 6.1s 实录：超时预算治理、SSE 生命周期、意图漂移修复 |
+| [第九章：评测体系](docs/blog/2026-09-21-eval-harness-hollow-eval.zh.md) | hollow eval 事故、评测异步化、黄金集双源、「全绿≠无缺陷」 |
+| [第十章：前端与流式交互](docs/blog/2026-09-21-frontend-streaming-ux.zh.md) | 单 jar 里的 SPA、手撸 SSE 协议、权威终态收口 |
+| [第十一章：可观测性与审计](docs/blog/2026-09-21-observability-audit-trace.zh.md) | 三条正交信道、append-only 审计链、「空白即线索」 |
+| [第十二章：部署交付实录](docs/blog/2026-09-21-deploy-delivery-hardening.zh.md) | 一进程即整站、部署翻车九连、公网安全清单、回滚即换指针 |
 
 **其他**
 
 | 文档 | 内容 |
 |------|------|
-| [docs/sql/](docs/sql/) | HITL L2 三表 DDL + mock 数据（用户自建） |
+| [src/main/resources/sql/](src/main/resources/sql/) | HITL L2 三表 DDL + mock 数据（用户自建） |
 | [scripts/rag-ingest/](scripts/rag-ingest/README.md) | Python 批量入库流水线（10 类文档分型解析 → 清洗 → 切分 → 幂等落库） |
