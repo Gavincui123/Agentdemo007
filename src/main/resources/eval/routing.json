@@ -39,6 +39,18 @@
       "context": { "noCandidates": true },
       "expected": { "scenario": "MODEL_DOWN", "shortCircuit": true },
       "note": "无可用模型→话术(MODEL_DOWN)+短路（§5.12 模型路由行）。"
+    },
+    {
+      "id": "rte-007",
+      "input": "退款流程是什么",
+      "expected": { "routeIntent": "faq_query" },
+      "note": "2026-09-28 线上事故回归：咨询退款政策/流程是知识性问题（faq_query），不得按字面『退款』误判 refund_request——曾致 entity-gate 澄清要订单号、售后收敛 needsRag=false 关闭知识通道，三轮缠绕出不来。"
+    },
+    {
+      "id": "rte-008",
+      "input": "我要退款",
+      "expected": { "routeIntent": "refund_request" },
+      "note": "rte-007 的对照用例：明确的办理动作诉求必须是 refund_request（高风险工作流），防咨询纠偏反向误伤真实请求。"
     }
   ]
 }

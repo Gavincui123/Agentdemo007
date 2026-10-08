@@ -23,8 +23,8 @@ import java.util.Set;
  *       pending 冲突），其余轮零成本；</li>
  *   <li><b>降级回退</b>：LLM 缺席/失败/输出不合法 → Optional.empty() → 调用方走原确定性分支
  *       （现行为完全保留，既有测试零感知）；</li>
- *   <li><b>小模型通道</b>：经 {@link ChatLlmService#chatRaw}（scene=会话仲裁，关思考，~1-2s），
- *       出站收口 §9.11。</li>
+ *   <li><b>轻量 LLM 出站</b>：经 {@link ChatLlmService#chatRaw}（scene=会话仲裁，按当前轮意图走路由，
+ *       显式关思考，~1-2s），出站收口 §9.11。</li>
  * </ul>
  * 判定空间（JSON，宽松解析）：{@code CONTINUE_ACTIVE}（问进度/寒暄式重复）/
  * {@code WITHDRAW}（撤销已提交售后）/{@code BIND_RUN}（订单号绑定某售后动作，intent 必填且须为

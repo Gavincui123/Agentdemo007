@@ -7,7 +7,9 @@ import com.agentdemo007.common.pipeline.PipelineStep;
 import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.intent.Intent;
 import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.observability.AgentTracer;
 import com.agentdemo007.session.model.StandardQuery;
+import io.opentelemetry.api.trace.SpanKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +18,8 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -60,6 +64,7 @@ public class RagStep implements PipelineStep {
     private final int rerankTopN;
     private final double prefilterMinScore;
     private final AgentMetrics metrics;
+    private final AgentTracer tracer;
     /** 知识库目录快照（[[kb-ingest-design]] 任务3 权限过滤；可选依赖 setter 注入——kb 模块未装配/
      * 单测直构时为 null，跳过过滤保持既有行为）。 */
     private volatile com.agentdemo007.capability.kb.KbCatalogService catalog;
@@ -84,6 +89,19 @@ public class RagStep implements PipelineStep {
                    @Value("${app.rag.rerank-top-n:10}") int rerankTopN,
                    @Value("${app.rag.prefilter-min-score:0.2}") double prefilterMinScore,
                    AgentMetrics metrics) {
+        this(retriever, validator, reranker, scanner, recallDense, rerankTopN, prefilterMinScore,
+                metrics, AgentTracer.NO_OP);
+    }
+
+    /** 全参构造（Phase 23 追加 tracer）：漏斗分段 span/Timer 在此收口。 */
+    public RagStep(Retriever retriever,
+                   RetrievalValidator validator,
+                   Reranker reranker,
+                   RagInjectionScanner scanner,
+                   @Value("${app.rag.recall-dense:24}") int recallDense,
+                   @Value("${app.rag.rerank-top-n:10}") int rerankTopN,
+                   @Value("${app.rag.prefilter-min-score:0.2}") double prefilterMinScore,
+                   AgentMetrics metrics, AgentTracer tracer) {
         this.retriever = retriever;
         this.validator = validator;
         this.reranker = reranker;
@@ -92,6 +110,7 @@ public class RagStep implements PipelineStep {
         this.rerankTopN = rerankTopN;
         this.prefilterMinScore = prefilterMinScore;
         this.metrics = metrics;
+        this.tracer = tracer;
     }
 
     @Override
@@ -115,7 +134,9 @@ public class RagStep implements PipelineStep {
         String query = resolveQuery(context);
         try {
             // ① 宽召回（topK 参数 = 稠密召回预算；融合池不截断，人人可携带检索置信度）
-            List<RagFragment> pool = retriever.retrieve(query, recallDense);
+            // Phase 23：检索是漏斗最贵一段（Chroma HTTP + BM25 + embedding），span + Timer 收口
+            List<RagFragment> pool = timed("retrieve", "agent.rag.recall-dense", String.valueOf(recallDense),
+                    () -> retriever.retrieve(query, recallDense));
             int recalled = pool.size();
             // ①′ 知识库权限过滤（[[kb-ingest-design]] 任务3 · Phase 21 三轴谓词）：命名空间/
             //     客户等级/点对点白名单/版本活性过滤——无权片段在进漏斗前出局（不占粗滤/重排/
@@ -162,7 +183,9 @@ public class RagStep implements PipelineStep {
             // ④ 条件重排：池 > top_n 才调（≤ top_n 时重排只改顺序不裁剪，跳过 API）；
             //    远程重排写 relevance，本地兜底/降级只排序（不覆写检索置信度）
             if (pool.size() > rerankTopN) {
-                pool = reranker.rerank(query, pool);
+                List<RagFragment> toRerank = pool; // lambda 捕获需有效 final
+                pool = timed("rerank", "agent.rag.pool", String.valueOf(afterPrefilter),
+                        () -> reranker.rerank(query, toRerank));
                 log.debug("条件重排：sessionId={} 池 {}→{} 条（远程写 relevance；本地兜底只排序）",
                         context.sessionId(), afterPrefilter, pool.size());
             }
@@ -174,7 +197,9 @@ public class RagStep implements PipelineStep {
                             describeFragment(r.fragment()), r.passed() ? "通过" : "拦截", r.reason());
                 }
             }
-            List<RagFragment> gated = validator.validate(pool);
+            List<RagFragment> gateCandidates = pool; // lambda 捕获需有效 final
+            List<RagFragment> gated = timed("gate", "agent.rag.candidates", String.valueOf(gateCandidates.size()),
+                    () -> validator.validate(gateCandidates));
             if (gated.isEmpty()) {
                 return skipRag(context, "空召回或置信度终闸不达标（召回=" + recalled + " 终闸候选=" + pool.size() + "）");
             }
@@ -263,6 +288,23 @@ public class RagStep implements PipelineStep {
     private String resolveQuery(PipelineContext context) {
         StandardQuery sq = context.standardQuery();
         return (sq != null) ? sq.text() : context.rawInput();
+    }
+
+    /**
+     * 漏斗分段计时收口（Phase 23）：span（{@code agent.rag.<phase>}，父 = agent.step）+
+     * {@code agent.rag.duration} Timer（phase 维度）+ end，retrieve/rerank/gate 三段共用。
+     * ②每步降级：body 抛出的异常原样透传（外层 RAG 链路异常统一降级 RAG_SKIP），计时/span 照常收口。
+     */
+    private <T> T timed(String phase, String attrKey, String attrValue, Supplier<T> body) {
+        long start = System.nanoTime();
+        AgentTracer.SpanHandle span = tracer.startSpan("agent.rag." + phase, SpanKind.INTERNAL,
+                "agent.rag.phase", phase, attrKey, attrValue);
+        try {
+            return body.get();
+        } finally {
+            metrics.recordRagPhase(phase, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+            span.end();
+        }
     }
 
     /**

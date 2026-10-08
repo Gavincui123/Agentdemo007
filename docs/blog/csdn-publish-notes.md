@@ -40,15 +40,26 @@
 - **第十二章 · 部署交付实录**
   首次公网部署当天闭环炸出来的九个环境语义错位：profile 写死、Nacos 静默不加载、容器内 127.0.0.1 连不上中间件、MySQL CREATE 权限时序、打包不 clean 存量 chunk、nginx reload 假成功、XFF 伪造、反代缓冲 SSE、HIDS 探针认亲。九成不是代码问题，是环境与代码假设的错位。
 
+- **第十三章 · 链路可视化（2026-10-08 新增，已发布：article 167283735）**
+  trace 信道从「一条线」升级成「一张图」：Boot 4 原生 spring-boot-starter-opentelemetry 埋点（不用 javaagent，部署链路零改动），15 步流水线、LLM 出站、RAG 漏斗、HTTP 出站、MQ 消费各有 span，Jaeger 瀑布图一屏读完一轮对话。traceId 对齐做成应用契约不变式（响应头 X-Trace-Id 直接搜 Jaeger）；Boot 4 属性前缀分裂与 endpoint 完整 URL 两个坑让 Jaeger 一度零数据（观测组件「安静地什么都不做」最危险）；顺手修掉 SSE 线程 traceId 断链线上 bug（21 span 修复后同链路）；Docker 构建解堵收口为零 RUN 层镜像 + bash /dev/tcp 探活。
+
 ## 二、配图对照（csdn-images/ 目录，文件名带章节号）
 
-正文引用 `assets/*.png`；上传时用 `csdn-images/` 下同名图（只含 PNG，避免误选 SVG）：
+图片引用分两套：**源稿**（`docs/blog/*.zh.md`）引用 `assets/*.png`（供 GitHub 渲染）；**csdn-web/ 发布副本**引用 `../csdn-images/第NN章-*.png` 本地相对路径（2026-09-23 起；本机 Markdown 预览可直接显示，上传 CSDN 时取图也在这里）。`csdn-images/` 只含 PNG（避免误选 SVG）：
 
-第01章 pipeline-15-steps ｜ 第02章 prompt-assembly-flow ｜ 第03章 breaker-threshold-spectrum ｜ 第04章 memory-layers-lifespan ｜ 第05章 rag-funnel-numbers ｜ 第06章 a-d 四张（rag-poison-defense / decision-layers / hitl-checkpoint-persistence / access-gate-flow）｜ 第07章 data-source-alignment ｜ 第08章 a-b 两张（final-rounds-breakdown / latency-evolution）｜ 第09章 eval-suite-composition ｜ 第10章 sse-event-protocol ｜ 第11章 observability-three-channels ｜ 第12章 deploy-topology
+第01章 pipeline-15-steps ｜ 第02章 prompt-assembly-flow ｜ 第03章 breaker-threshold-spectrum ｜ 第04章 memory-layers-lifespan ｜ 第05章 rag-funnel-numbers ｜ 第06章 a-d 四张（rag-poison-defense / decision-layers / hitl-checkpoint-persistence / access-gate-flow）｜ 第07章 data-source-alignment ｜ 第08章 a-b 两张（final-rounds-breakdown / latency-evolution）｜ 第09章 eval-suite-composition ｜ 第10章 sse-event-protocol ｜ 第11章 observability-three-channels ｜ 第12章 deploy-topology ｜ 第13章 示意图两张（otel-trace-flow / jaeger-waterfall-annotated）+ 实测截图五张（jaeger-search / jaeger-waterfall / jaeger-span-tags / jaeger-traceid-search / obs-dashboard，2026-10-08 生产实测）
+
+**第十三章截图已齐**（2026-10-08 晚）：原计划 6 个截图位合并为 5 张入文（13-4/13-5 并入瀑布图说明），源稿与 csdn-web 副本均已替换占位。发布时上传 `csdn-images/` 里 7 张第13章-*.png（2 示意 + 5 截图）并替换本地路径为图床链接。
+
+**第十二章回改**（ch13 已发布，2026-10-08 拍板）：CSDN 后台编辑已发布的第十二章两处——①头部「系列第十二章（完结篇）」去掉（完结篇）并补「｜ 下一章」链接；②文末相关阅读的「—— **系列完**」替换为「· 下一章：链路可视化」链接。现成文案见 `csdn-web/部署交付实录….md` 头部与尾部（下一章链接已回填 article 167283735；仓库侧三处占位——系列目录第十三章行、ch12 头部、ch12 相关阅读——均已回填完毕，剩 CSDN 后台手工改 ch12 这一步）。
+
+2026-09-23 新增 8 张实测截图（六章源稿与 csdn-web 副本均已插入对应小节，README 同步引用；原图自 src/main/resources/img/ 迁至 docs/blog/assets/，发布取图在 csdn-images/）：
+
+第01章-pipeline-intent-log（一次请求日志链）｜ 第02章-full-prompt-assembly（完整 prompt 实拍）｜ 第05章-answer-with-citations（引用回答）｜ 第07章-hitl-1-submit-only / hitl-2-admin-ticket / hitl-3-status-verified（HITL 闭环三连）｜ 第08章-four-rounds-ui（四轮验证界面）｜ 第11章-obs-telemetry-snapshot（遥测快照）
 
 ## 三、注意事项
 
 1. **编辑器**：用 CSDN 的 Markdown 编辑器（不是富文本）；粘贴前确认「核心结论（TL;DR）」标题行上下都是空行。
-2. **图片**：正文里的 `![](assets/xxx.png)` 上传后需手动替换为 CSDN 图床链接。
+2. **图片**：csdn-web 副本里的 `![](../csdn-images/第NN章-*.png)` 是本地路径，CSDN 编辑器里不显示——发布时逐张上传 `csdn-images/` 对应 PNG，把本地路径替换成 CSDN 图床链接（共 24 张：示意图 16 张 + 实测截图 8 张；第六章 4 张、第七章 4 张、第八章 3 张）。
 3. **mermaid**：CSDN 原生支持，正文 mermaid 块已按旧版语法兼容处理（无单引号标签、无裸 #）；如再报渲染错误，把报错贴出来。
 4. **标题锚点**：正文小节标题含 `;` 等符号的（如 核心结论（TL;DR）），如遇目录跳转异常可再简化。

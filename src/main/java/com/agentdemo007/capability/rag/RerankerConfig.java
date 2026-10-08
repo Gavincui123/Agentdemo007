@@ -28,14 +28,21 @@ import java.util.List;
 public class RerankerConfig {
 
     @Bean
-    RestTemplate rerankerRestTemplate() {
+    RestTemplate rerankerRestTemplate(org.springframework.beans.factory.ObjectProvider<com.agentdemo007.observability.AgentTracer> tracer,
+                                      org.springframework.beans.factory.ObjectProvider<io.opentelemetry.api.OpenTelemetry> openTelemetry) {
         // 超时预算治理：裸 RestTemplate 无超时（连接/读取无限挂起）。15s 读超时 = 查询重排健康
         // 耗时（亚秒~2s）的 7 倍+ 余量；超时→FailoverReranker 降级 BM25，不阻塞链路。
         org.springframework.http.client.SimpleClientHttpRequestFactory f =
                 new org.springframework.http.client.SimpleClientHttpRequestFactory();
         f.setConnectTimeout(10_000);
         f.setReadTimeout(15_000);
-        return new RestTemplate(f);
+        RestTemplate rt = new RestTemplate(f);
+        // Phase 23：出站 CLIENT span + W3C 注入（Boot 4 无 RestTemplateBuilder，手写拦截器收口）；
+        // ObjectProvider 缺省降级：切片测试迷你上下文无 OTel bean 时不炸装配
+        rt.getInterceptors().add(new com.agentdemo007.observability.trace.TraceClientInterceptor(
+                tracer.getIfAvailable(() -> com.agentdemo007.observability.AgentTracer.NO_OP),
+                openTelemetry.getIfAvailable(io.opentelemetry.api.OpenTelemetry::noop)));
+        return rt;
     }
 
     @Bean

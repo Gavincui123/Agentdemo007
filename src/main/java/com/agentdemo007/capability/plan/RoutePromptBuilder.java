@@ -3,6 +3,7 @@ package com.agentdemo007.capability.plan;
 import com.agentdemo007.session.model.ChatMessage;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
@@ -21,6 +22,28 @@ import java.util.stream.Collectors;
  * <p>历史 transcript 复用 {@code QueryRewriter} 的 {@code [角色] 内容} 模式（Phase 4 引擎无关消息收口）。
  */
 public class RoutePromptBuilder {
+
+    /**
+     * 11 已知业务意图的一句话业务定义（与 {@link RoutePlanBaselines} 的 knownIntents 一一对应；
+     * {@link #intentDefinitions()} 按 knownIntents 顺序取用，新意图缺定义时退化为仅意图名不崩）。
+     *
+     * <p>prompt 工程核心与 {@link com.agentdemo007.intent.IntentRecognizerImpl} 同款：一句话定义远比
+     * 枚举名可依赖。2026-09-28 线上事故（『退款流程是什么』被字面「退款」带偏成 refund_request →
+     * entity-gate 澄清要订单号 + 售后收敛关闭 RAG）补齐路由层——此前 11 个意图只有名字没有定义，
+     * 两个 few-shot 又全是退款请求，小模型无咨询/办理分界依据。
+     */
+    private static final Map<String, String> INTENT_DEFINITIONS = Map.ofEntries(
+            Map.entry("order_query", "查询已有订单的状态/物流/详情（要『查』，不是要『办』）"),
+            Map.entry("refund_status_query", "查询已提交退款的办理进度或结果"),
+            Map.entry("refund_request", "用户明确表达办理退款的动作诉求（如『我要退款』『帮我退了这笔订单』）"),
+            Map.entry("return_request", "用户明确表达办理退货的动作诉求（如『我要退货』）"),
+            Map.entry("product_query", "商品咨询：在售商品、参数、推荐"),
+            Map.entry("faq_query", "咨询政策/流程/规则等知识性信息（『XX是什么/流程怎么走/政策怎么规定/需要什么条件』），包括退款退货的政策与流程"),
+            Map.entry("promotion_query", "促销活动与会员权益咨询"),
+            Map.entry("low_confidence_query", "无法理解用户诉求"),
+            Map.entry("security_request", "账号安全类问题：盗号、封禁、诈骗"),
+            Map.entry("degradation_request", "用户明确要求人工服务"),
+            Map.entry("general_chat", "与业务无关的闲聊"));
 
     /** 4 知识域（[[routeplan-design]] 固定集，不随 intent 变）。 */
     private static final List<String> KNOWLEDGE_DOMAINS = List.of(
@@ -67,6 +90,9 @@ public class RoutePromptBuilder {
           .append("只输出 JSON，不要附加说明。字段如下（snake_case）：\n")
           .append(FIELD_SPEC.stream().map(f -> "  - " + f).collect(Collectors.joining("\n"))).append("\n")
           .append("约束：intent 只能从以下选一个：").append(String.join(" / ", baselines.knownIntents())).append("；")
+          .append(intentDefinitions())
+          .append("分类原则：询问政策/流程/条件/规则的知识性问题（『是什么/怎么规定/流程怎么走/需要什么条件』）属于 faq_query")
+          .append("——即使内容涉及退款/退货；refund_request/return_request 只用于明确的办理动作诉求（『我要退款/帮我退货』）。\n")
           .append("required_tools 只能从 tool_candidates 选，不可发明工具；")
           .append("knowledge_domains 只能从以下 4 域选：").append(String.join(" / ", KNOWLEDGE_DOMAINS)).append("；")
           .append("risk_level 只能是：").append(String.join(" / ", RISK_LEVELS)).append("；")
@@ -89,9 +115,14 @@ public class RoutePromptBuilder {
               .append(" 等待订单号（Turn-2 续跑参考）。优先级：用户本轮的显式业务诉求永远高于未完成意图——")
               .append("仅当本轮只是补充订单号、未提及任何其他业务动作时，intent 才填 ").append(pendingIntent)
               .append("；本轮一旦显式提到其他动作（如退款/退货/查订单/商品咨询），一律按本轮诉求填 intent，")
-              .append("不要被未完成意图带跑。\n");
+              .append("不要被未完成意图带跑。政策/流程类咨询（如『XX流程是什么』）一律按 faq_query 等咨询意图处理，")
+              .append("不受未完成意图影响。\n");
         }
         sb.append("tool_candidates：").append(String.join(" / ", toolCandidates)).append("\n")
+          .append("示例（咨询退款政策/流程——知识性问题，非办理退款）：{\"intent\":\"faq_query\",\"needs_rag\":true,\"needs_business_tools\":false,")
+          .append("\"required_tools\":[],\"knowledge_domains\":[\"after_sale_policy\"],")
+          .append("\"risk_level\":\"low\",\"requires_workflow\":false,\"fallback_policy\":\"knowledge_only\",")
+          .append("\"ambiguous\":false}\n")
           .append("示例（退款请求）：{\"intent\":\"refund_request\",\"needs_rag\":true,\"needs_business_tools\":true,")
           .append("\"required_tools\":[\"get_order_detail\"],\"knowledge_domains\":[\"after_sale_policy\"],")
           .append("\"risk_level\":\"high\",\"requires_workflow\":true,\"fallback_policy\":\"workflow_first\",")
@@ -101,6 +132,16 @@ public class RoutePromptBuilder {
           .append("\"risk_level\":\"high\",\"requires_workflow\":true,\"fallback_policy\":\"workflow_first\",")
           .append("\"ambiguous\":false,\"secondary_intent\":\"product_query\"}\n")
           .append("历史：\n").append(transcript).append("\n用户本轮问题：").append(q);
+        return sb.toString();
+    }
+
+    /** 意图定义块（按 baselines.knownIntents 顺序产出，防定义集与意图集漂移；缺定义退化为仅意图名）。 */
+    private String intentDefinitions() {
+        StringBuilder sb = new StringBuilder("意图定义（按定义选 intent，勿按字面关键词）：\n");
+        for (String intent : baselines.knownIntents()) {
+            String def = INTENT_DEFINITIONS.get(intent);
+            sb.append("  - ").append(intent).append("(").append(def != null ? def : intent).append(")\n");
+        }
         return sb.toString();
     }
 

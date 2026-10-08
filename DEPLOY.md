@@ -398,7 +398,7 @@ audit:
 }
 ```
 
-字段可部分更新（省略/null 沿用当前值）；解析失败保留旧值；Nacos 不可达降级 yml 本地兜底值。配额存储：`REDIS_ENABLED=true` → Redis INCR+48h TTL（重启不丢）；否则内存重启清零。**发布清单**：Nacos 建 `agentdemo-gate.json` → 确认 `REDIS_ENABLED=true` → nginx `proxy_set_header X-Real-IP $remote_addr`（IP 防伪信任链前提）→ 安全组只放 80/443（8080 直连绕过闸门）。
+字段可部分更新（省略/null 沿用当前值）；解析失败保留旧值；Nacos 不可达降级 yml 本地兜底值。配额存储：`REDIS_ENABLED=true` → Redis INCR+48h TTL（重启不丢）；否则内存重启清零。**发布清单**：Nacos 建 `agentdemo-gate.json` → 确认 `REDIS_ENABLED=true` → nginx `proxy_set_header X-Real-IP $remote_addr`（IP 防伪信任链前提）→ 安全组只放 80/443/8077（v3 直连发布终态：8077 由应用内闸口守门；本清单早期版本写的是 80/443，8077 为直连方案落地时追加）。
 
 ### 6.6 启动命令
 
@@ -579,48 +579,18 @@ prod 由 `classpath:schema.sql`（`src/main/resources/schema.sql`）建表，`ap
 | dev 不连 RabbitMQ 正常 | `RABBITMQ_ENABLED` 默认 false，NoopMessagePublisher，会话/审计仅记 log |
 | `npx vue-tsc` 报 `ERR_PACKAGE_PATH_NOT_EXPORTED` | npx 缓存与 TS6 不兼容 → 用 `npm run build` / `npm run typecheck`（本地 `node_modules/.bin/vue-tsc`） |
 | 多实例横向扩容 | HITL 工单/检查点/售后提交登记按**单实例内存真相源**设计（DB/Redis 为异步副本）；扩容前需把检查点消费 CAS 与工单状态机挪到 DB 乐观锁，否则各实例状态漂移 |
-| 闸口对直连 8080 的请求不设防 | localhost 豁免与 IP 解析的信任链以「nginx 在前」为前提（X-Real-IP 由 nginx 覆写）→ 8080 只对内、安全组仅放 80/443 |
+| 直连 8077 伪造头可绕豁免/洗额度（v3 新增） | localhost 豁免与 IP 解析的信任链以「nginx 在前覆写 X-Real-IP」为前提（AccessGateService javadoc 原话「伪造值不生效」以 nginx 覆写为前提）；v3 直连发布后无 nginx 在前，外部直连客户端自带 `X-Real-IP: 127.0.0.1` 可骗过 localhost 豁免（免口令免额度）、换假 X-Real-IP 可洗 IP 日额。诚实客户端不受影响；收口方向：无可信代理（remoteAddr 非内网网关）时忽略入站 X-Real-IP/X-FF、只认 TCP 对端 |
 
 ---
 
-## 12. 容器化（可选示例，项目未内置 Dockerfile）
+## 12. 容器化（已内置，见仓库 Dockerfile 与 docker-compose.prod.yml）
 
-多阶段构建：Node 阶段产前端产物 → JKD 阶段打 jar 运行。
-
-```dockerfile
-# ---- 前端构建 ----
-FROM node:20-alpine AS fe
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm ci
-COPY frontend/ ./
-RUN npm run build    # 直出 ../src/main/resources/static/
-
-# ---- 后端构建 ----
-FROM maven:3.9-eclipse-temurin-17 AS be
-WORKDIR /app
-COPY . .
-COPY --from=fe /app/src/main/resources/static ./src/main/resources/static
-RUN ./mvnw clean package -DskipTests
-
-# ---- 运行 ----
-FROM eclipse-temurin:17-jre
-WORKDIR /app
-COPY --from=be /app/target/Agentdemo007-0.0.1-SNAPSHOT.jar app.jar
-EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
-```
-
-```bash
-docker build -t agentdemo007:0.0.1 .
-docker run -p 8080:8080 \
-  -e SPRING_PROFILES_ACTIVE=prod \
-  -e ADMIN_TOKEN=... -e EVAL_TOKEN=... \
-  -e DS_URL=... -e DS_USERNAME=... -e DS_PASSWORD=... \
-  -e NACOS_SERVER_ADDR=... -e NACOS_NAMESPACE=... \
-  -e LLM_ENABLED=true -e SF_KEY=... \
-  agentdemo007:0.0.1
-```
+> 2026-10-08 更正：本章此前声称「项目未内置 Dockerfile」并给出演示样例——已过时。
+> 仓库根目录已有 `Dockerfile`（temurin-17-jre 运行时镜像，jar 本机构建后 COPY）、
+> `docker-compose.prod.yml`（8077 直连发布 + 内存口径 + healthcheck + Lucene/日志挂卷）与
+> `docker-compose.observability.yml`（Jaeger 链路可视化后端）。完整生产流程以
+> `docs/guides/部署实录.md` 为准：本机 build → save/scp/load → `up -d`（不带 --build），
+> 服务器不依赖 Docker Hub。
 
 ---
 

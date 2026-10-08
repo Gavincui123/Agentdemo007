@@ -153,8 +153,11 @@ public class EvalExecutor {
                 ? context.queryEnrichment().keywords() : List.of();
         List<String> rags = context.ragFragments();
         boolean hasFrags = rags != null && !rags.isEmpty();
+        // 2026-09-28：业务意图（routePlan.intent()）——intent 只承载 7 认知意图，钉不住 faq_query vs refund_request
+        String routeIntent = (context.routePlan() != null) ? context.routePlan().intent() : null;
         return new ActualOutcome(scenario, degraded, intent, route, selectedModel,
                 outcome, blocked, zeroLlm, shortCircuit,
+                routeIntent,
                 enrKeywords, rags != null ? rags : List.of(), hasFrags);
     }
 
@@ -177,6 +180,7 @@ public class EvalExecutor {
         checkBoolean(mismatches, "blocked", expected.blocked(), actual.blocked());
         checkBoolean(mismatches, "zeroLlm", expected.zeroLlm(), actual.zeroLlm());
         checkBoolean(mismatches, "shortCircuit", expected.shortCircuit(), actual.shortCircuit());
+        check(mismatches, "routeIntent", expected.routeIntent(), actual.routeIntent());
         // Phase 20（T92）：约束改写补全槽 + RAG 片段（含时效标注）
         checkContains(mismatches, "queryEnrichmentContains",
                 expected.queryEnrichmentContains(), actual.queryEnrichmentKeywords());

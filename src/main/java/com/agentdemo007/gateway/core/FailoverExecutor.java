@@ -3,12 +3,14 @@ package com.agentdemo007.gateway.core;
 import com.agentdemo007.gateway.config.FailoverPolicy;
 import com.agentdemo007.gateway.exception.LlmUnavailableException;
 import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.observability.AgentTracer;
 import com.agentdemo007.resilience.BackoffStrategy;
 import com.agentdemo007.resilience.Decision;
 import com.agentdemo007.resilience.ExceptionTriage;
 import com.agentdemo007.resilience.ResilientExecutor;
 import com.agentdemo007.resilience.RetryPolicy;
 import com.agentdemo007.resilience.Sleeper;
+import io.opentelemetry.api.trace.SpanKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,6 +46,7 @@ public class FailoverExecutor {
     private final RetryPolicy retryPolicy;
     private final ExceptionTriage triage;
     private final AgentMetrics metrics;
+    private final AgentTracer tracer;
 
     /** dev/未装配：noRetry + 默认分诊，行为等价"不重试、非致命即切备选"。 */
     public FailoverExecutor() {
@@ -59,10 +62,17 @@ public class FailoverExecutor {
     /** 装配路径（含指标）：注入重试模板、重试策略、分诊器、指标门面。 */
     public FailoverExecutor(ResilientExecutor resilientExecutor, RetryPolicy retryPolicy, ExceptionTriage triage,
                             AgentMetrics metrics) {
+        this(resilientExecutor, retryPolicy, triage, metrics, AgentTracer.NO_OP);
+    }
+
+    /** 装配路径（Phase 23 追加 tracer）：链路门面随指标一并注入（GatewayConfig @Bean），gen_ai span 在此收口。 */
+    public FailoverExecutor(ResilientExecutor resilientExecutor, RetryPolicy retryPolicy, ExceptionTriage triage,
+                            AgentMetrics metrics, AgentTracer tracer) {
         this.resilientExecutor = resilientExecutor;
         this.retryPolicy = retryPolicy;
         this.triage = triage;
         this.metrics = metrics;
+        this.tracer = tracer;
     }
 
     public LlmResponse execute(GatewayRequest request, ModelExecutor executor) {
@@ -81,6 +91,16 @@ public class FailoverExecutor {
         for (int attempt = 0; attempt < maxAttempts; attempt++) {
             String modelId = candidates.get(attempt);
             long start = System.nanoTime();
+            // Phase 23 gen_ai span（CLIENT，对齐 OTel 生成式 AI 语义约定）：与「LLM出站」日志行同点位
+            // 同口径——scene/model/attempt 落属性、成功落 token 用量、失败落 error 状态；Jaeger 里同轮
+            // 多次出站（改写/意图/路由/终答/工具循环各一次）按 scene 可辨，与日志收口互为镜像。
+            // gen_ai.system=openai：主备均为 OpenAI 兼容线协议（SiliconFlow/DashScope compatible-mode）。
+            AgentTracer.SpanHandle llmSpan = tracer.startSpan("gen_ai.chat", SpanKind.CLIENT,
+                    "gen_ai.system", "openai",
+                    "gen_ai.request.model", modelId,
+                    "agent.scene", request.sceneOrDefault(),
+                    "agent.attempt", String.valueOf(attempt + 1),
+                    "agent.failover.primary", request.primaryModelId());
             try {
                 LlmResponse response = resilientExecutor.execute(
                         () -> executor.execute(new LlmRequest(modelId, request.prompt(), request.maxTokens(),
@@ -88,6 +108,8 @@ public class FailoverExecutor {
                         retryPolicy);
                 long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
                 metrics.recordModelCall(millis, true);
+                llmSpan.attr("gen_ai.usage.total_tokens", response.tokens());
+                llmSpan.attr("agent.response.model", response.modelId()); // 实际产出模型（转移时=备选）
                 // [[q2-llm-egress-timing]] 日志埋点：人读日志打一行（scene + modelId + 耗时 + 成败 + attempt），
                 // 供 tail 日志按调用定位各段延迟与用途归属（scene=查询改写/意图识别/路由计划/会话摘要/
                 // 回答生成/工具调用——同轮多次小模型出站据此可辨，不再同形不可分）。millis 与
@@ -105,6 +127,8 @@ public class FailoverExecutor {
             } catch (RuntimeException e) {
                 long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
                 metrics.recordModelCall(millis, false);
+                llmSpan.error(e);
+                llmSpan.attr("agent.attempt.durMs", millis);
                 log.info("LLM出站 scene={} model={} durMs={} ok=false attempt={}/{} reason={}",
                         request.sceneOrDefault(), modelId, millis, attempt + 1, maxAttempts, e.getMessage());
                 Decision d = triage.triage(e).decision();
@@ -114,6 +138,8 @@ public class FailoverExecutor {
                 lastCause = e;
                 log.warn("模型执行失败，尝试备选：scene={} model={} attempt={}/{} reason={}",
                         request.sceneOrDefault(), modelId, attempt + 1, maxAttempts, e.getMessage());
+            } finally {
+                llmSpan.end(); // 每次尝试一个 span（重试/转移各成一段，瀑布图按 attempt 平铺可见）
             }
         }
         metrics.recordFailover(true); // 全候选耗尽

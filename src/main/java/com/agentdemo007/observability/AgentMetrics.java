@@ -55,6 +55,10 @@ public class AgentMetrics {
     static final String FAILOVER = "agent.failover";
     static final String TRUE = "true";
     static final String FALSE = "false";
+    static final String STEP_DURATION = "agent.step.duration";
+    static final String STEP_TAG = "step";
+    static final String RAG_DURATION = "agent.rag.duration";
+    static final String PHASE_TAG = "phase";
 
     private final MeterRegistry registry;
 
@@ -139,6 +143,20 @@ public class AgentMetrics {
     /** 故障转移事件计数（outcome=success=成功转移 / exhausted=候选耗尽）。 */
     public void recordFailover(boolean exhausted) {
         registry.counter(FAILOVER, OUTCOME_TAG, exhausted ? "exhausted" : "success").increment();
+    }
+
+    /**
+     * per-step 耗时 Timer（Phase 23·编排器 per-step 包夹）——补上 Phase 15 起
+     * 「per-step 只有 StepStarted/Finished 事件、无计时」的缺口（博客可观测性章节明确记录过的欠账）。
+     * outcome 维度：proceed / short_circuit / degrade / exception（Retry 线性等价 Proceed，记 proceed）。
+     */
+    public void recordStepDuration(String step, long millis, String outcome) {
+        registry.timer(STEP_DURATION, STEP_TAG, step, OUTCOME_TAG, outcome).record(Duration.ofMillis(millis));
+    }
+
+    /** RAG 漏斗分段耗时（Phase 23：phase= retrieve / rerank / gate；此前 RAG 只有命中计数无计时）。 */
+    public void recordRagPhase(String phase, long millis) {
+        registry.timer(RAG_DURATION, PHASE_TAG, phase).record(Duration.ofMillis(millis));
     }
 
     /** 流水线终端产出类型（区分 ①话术短路 vs ②每步降级 vs 正常）。 */

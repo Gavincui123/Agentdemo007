@@ -1,6 +1,7 @@
 package com.agentdemo007.persistence.mq;
 
 import com.agentdemo007.common.trace.TraceId;
+import com.agentdemo007.observability.AgentTracer;
 import com.agentdemo007.observability.audit.AuditEvent;
 import com.agentdemo007.observability.audit.AuditEventType;
 import com.agentdemo007.observability.trace.MdcTraceContextPropagator;
@@ -82,7 +83,7 @@ class AuditConsumerTest {
             seenTrace.set(TraceId.current());
             return inv.getArgument(0);
         });
-        AuditConsumer tracingConsumer = new AuditConsumer(capturingRepo, propagator);
+        AuditConsumer tracingConsumer = new AuditConsumer(capturingRepo, propagator, AgentTracer.NO_OP);
         AuditEvent event = AuditEvent.of(AuditEventType.INJECTION, traceId, "sess-9", "注入命中");
 
         tracingConsumer.onAuditEvent(event, channel, 11L, traceparent);

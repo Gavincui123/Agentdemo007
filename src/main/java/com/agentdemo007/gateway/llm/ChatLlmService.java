@@ -13,6 +13,8 @@ import com.agentdemo007.gateway.exception.ModelSelectionException;
 import com.agentdemo007.gateway.selector.ModelSelector;
 import com.agentdemo007.gateway.selector.SelectionCriteria;
 import com.agentdemo007.intent.Intent;
+import com.agentdemo007.observability.AgentTracer;
+import io.opentelemetry.api.trace.SpanKind;
 
 import java.util.List;
 import java.util.Optional;
@@ -37,6 +39,7 @@ public class ChatLlmService {
     private final PromptSanitizer sanitizer;
     private final boolean thinkingEnabled;
     private final int maxTokens;
+    private final AgentTracer tracer;
 
     public ChatLlmService(UnifiedModelGateway gateway, ModelConfigCenter center,
                            ModelSelector selector, PromptSanitizer sanitizer) {
@@ -60,12 +63,20 @@ public class ChatLlmService {
     public ChatLlmService(UnifiedModelGateway gateway, ModelConfigCenter center,
                            ModelSelector selector, PromptSanitizer sanitizer,
                            boolean thinkingEnabled, int maxTokens) {
+        this(gateway, center, selector, sanitizer, thinkingEnabled, maxTokens, AgentTracer.NO_OP);
+    }
+
+    /** 全参构造（Phase 23 追加 tracer）：流式 gen_ai span 在 {@link #chatRawStream} 收口（流式不经 FailoverExecutor）。 */
+    public ChatLlmService(UnifiedModelGateway gateway, ModelConfigCenter center,
+                           ModelSelector selector, PromptSanitizer sanitizer,
+                           boolean thinkingEnabled, int maxTokens, AgentTracer tracer) {
         this.gateway = gateway;
         this.center = center;
         this.selector = selector;
         this.sanitizer = sanitizer;
         this.thinkingEnabled = thinkingEnabled;
         this.maxTokens = maxTokens;
+        this.tracer = tracer;
     }
 
     /** 同步对话：返回模型回复文本。强制 {@link PromptSanitizer} 包裹（注入隔离）。 */
@@ -129,9 +140,39 @@ public class ChatLlmService {
         FailoverPolicy failover = new FailoverPolicy.Builder(primary).build();
         GatewayRequest request = new GatewayRequest(primary, prompt, maxTokens,
                 failover, center.flowControl(), disableThinkingFor(intent), "回答生成");
+        // Phase 23 流式 gen_ai span：流式不经 FailoverExecutor，此处是唯一收口点——span 覆盖整个流
+        // 生命周期（start 在调用线程=父上下文正确；end 在 LC4j 回调线程，Span.end 线程安全）。
+        // onComplete/onError 恰一次（接口契约）各收口；同步抛（预算超限/leaf 前置）在 catch 收口。
+        AgentTracer.SpanHandle streamSpan = tracer.startSpan("gen_ai.chat", SpanKind.CLIENT,
+                "gen_ai.system", "openai",
+                "gen_ai.request.model", primary,
+                "agent.scene", "回答生成",
+                "agent.stream", "true",
+                "agent.attempt", "1");
         try {
-            gateway.stream(request, handler);
+            gateway.stream(request, new StreamingReplyHandler() {
+                @Override
+                public void onPartialResponse(String token) {
+                    handler.onPartialResponse(token);
+                }
+
+                @Override
+                public void onCompleteResponse(String fullReply, int tokens) {
+                    streamSpan.attr("gen_ai.usage.total_tokens", tokens);
+                    streamSpan.end();
+                    handler.onCompleteResponse(fullReply, tokens);
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    streamSpan.error(error);
+                    streamSpan.end();
+                    handler.onError(error);
+                }
+            });
         } catch (Throwable e) {
+            streamSpan.error(e);
+            streamSpan.end();
             handler.onError(e); // 预算超限/leaf 前置抛→onError（调用方回退阻塞 chatRaw）
         }
     }

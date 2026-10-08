@@ -444,7 +444,41 @@ class WorkflowExecutionStepTest {
         s.process(ctx);
 
         assertThat(ctx.presetReply()).contains("退款").contains("退货").contains("订单号"); // 菜单 + 要单号
-        assertThat(store.get("s1")).isPresent(); // pending 保留
+        // 2026-09-28 收口（线上三轮缠绕）：菜单澄清针对的就是收集中的同一动作 → pending 清除，
+        // 菜单已让用户重新表态，保留会把会话继续钉在该动作语境
+        assertThat(store.get("s1")).isEmpty();
+    }
+
+    @Test
+    void process_ambiguous_pendingDifferentIntent_kept() {
+        // 异动作 pending 不受影响（仅同动作清除）：pending 退款，本轮 ambiguous 退货
+        InMemoryPendingWorkflowStore store = new InMemoryPendingWorkflowStore();
+        store.put("s1", new PendingWorkflow("refund_request"));
+        WorkflowExecutionStep s = new WorkflowExecutionStep(
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Pending(false)).graph(),
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Pending(false)).graph(), store, null, null);
+
+        PipelineContext ctx = new PipelineContext("s1", "不要退款了到底怎么退货");
+        ctx.setRoutePlan(ambiguousPlan()); // intent=return_request + ambiguous
+        s.process(ctx);
+
+        assertThat(ctx.presetReply()).contains("退货"); // 菜单澄清照常
+        assertThat(store.get("s1")).isPresent();        // 异动作 pending 保留
+    }
+
+    @Test
+    void process_ambiguous_noPending_noCrash_menuOnly() {
+        // 无 pending 时菜单澄清照常（2026-09-28 收口不改变无 pending 行为）
+        WorkflowExecutionStep s = new WorkflowExecutionStep(
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Pending(false)).graph(),
+                new InvokeCanary(new AfterSaleWorkflowOutcome.Pending(false)).graph(),
+                new InMemoryPendingWorkflowStore(), null, null);
+
+        PipelineContext ctx = new PipelineContext("s1", "退款还是退货");
+        ctx.setRoutePlan(ambiguousPlan());
+        s.process(ctx);
+
+        assertThat(ctx.presetReply()).contains("退款").contains("退货");
     }
 
     @Test
