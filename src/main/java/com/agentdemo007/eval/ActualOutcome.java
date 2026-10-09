@@ -12,6 +12,9 @@ import java.util.List;
  * {@code context.queryEnrichment()}）、{@code ragFragments}（RAG 片段文本列表，含时效标注）、
  * {@code hasFragments}（片段非空）——使 ③环节测评 对 Phase 20 行为可断言。
  *
+ * <p>2026-09-28 增 {@code routeIntent}（业务意图名，{@code context.routePlan().intent()}）：
+ * {@code intent} 只承载 7 认知意图，钉不住业务层路由（faq_query vs refund_request）。
+ *
  * @param scenario      降级场景名（无降级为 {@code NONE}）
  * @param degraded      是否降级
  * @param intent        意图枚举名（未识别为 {@code null}）
@@ -21,11 +24,13 @@ import java.util.List;
  * @param blocked       是否注入拦截（scenario=INJECTION）
  * @param zeroLlm       是否零 LLM（scenario 属短路在模型调用前的场景）
  * @param shortCircuit  是否话术短路（outcome=SHORT_CIRCUIT）
+ * @param routeIntent   业务意图名（routePlan 未设为 {@code null}）
  * @param queryEnrichmentKeywords 约束改写补全精确词（Phase 20·T88）
  * @param ragFragments   RAG 片段文本列表（含时效标注，T90 displayText）
  * @param hasFragments   片段是否非空
  */
 record ActualOutcome(String scenario, boolean degraded, String intent, String route, String selectedModel,
                      String outcome, boolean blocked, boolean zeroLlm, boolean shortCircuit,
+                     String routeIntent,
                      List<String> queryEnrichmentKeywords, List<String> ragFragments, boolean hasFragments) {
 }

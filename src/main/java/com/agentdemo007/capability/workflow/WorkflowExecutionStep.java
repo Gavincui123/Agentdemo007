@@ -34,7 +34,7 @@ import java.util.concurrent.Future;
  * <p><b>@670 状态机</b>（[[p0-intent-switch-clarify-design]] §5；2026-09-18 增 1b 衔接判定）：按当前轮
  * {@link RoutePlan} 的 intent/ambiguous/secondaryIntent + 订单号（raw 优先、缺失回退 standardQuery
  * ——决策层接短期记忆）+ 提交业务记忆 + pending 状态，决策续跑/切换/放弃/并发。
- * ambiguous 最先短路（澄清菜单，pending 保留）；<b>1b 衔接判定</b>：同 action 同订单（或同会话最近
+ * ambiguous 最先短路（澄清菜单；收集中的同动作 pending 随菜单清除，异动作保留）；<b>1b 衔接判定</b>：同 action 同订单（或同会话最近
  * 同 action 且本轮无单号）的活跃提交 → 回"已在处理中"，不重复澄清、不重复提单；无单号
  * workflow→澄清存 pending；单号+workflow→先 remove 再跑图；单号+abandon 集
  * （order_query/security_request/...）→先 remove 主链；单号+非售后+pending→并发（Task 14）。
@@ -211,8 +211,15 @@ public class WorkflowExecutionStep implements PipelineStep {
             if (workflowIntent) {
                 recordRecentAction(context.sessionId(), rp.intent());
             }
+            // 2026-09-28 收口（线上三轮缠绕实测）：澄清收集中的 pending 没有「放弃」出口——仲裁器只覆盖
+            // 已提交（WITHDRAW）/多动作绑定，收集阶段被 ambiguous 菜单澄清时 pending 原样保留，会话被持续
+            // 钉在该动作语境（「我不要退款」→ 菜单 → 下一轮仍被 pending 提示拉回退款办理）。菜单已让用户
+            // 重新表态，故针对的就是收集中的同一动作时清除 pending；异动作 pending 不受影响。
+            if (pendingOpt.isPresent() && pendingOpt.get().intent().equals(rp.intent())) {
+                pendingStore.remove(context.sessionId());
+            }
             context.setPresetReply(clarifyAmbiguous(context, rp.intent(), orderId));
-            return new StepOutcome.Proceed(); // pending 保留
+            return new StepOutcome.Proceed(); // 异动作 pending 保留
         }
         // 2b. 无单号
         if (orderId == null) {

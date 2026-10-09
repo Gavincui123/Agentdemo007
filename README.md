@@ -23,31 +23,31 @@
 
 ## 效果展示
 
-以下截图均为本地实测（原图见 [src/main/resources/img/](src/main/resources/img/)）。
+以下截图均为本地实测（原图见 [docs/blog/assets/](docs/blog/assets/)）。
 
 **多轮对话与意图路由**：算术 → 商品推荐 → 压力复读退货 → 商品咨询四轮连续会话——意图分类稳定不漂移、规则短路径首字 2.1s、回复附可追溯「参考来源」：
 
-![多轮对话与意图路由](src/main/resources/img/1-意图识别优化后的效果.png)
+![多轮对话与意图路由](docs/blog/assets/2026-09-23-four-rounds-ui.png)
 
 **知识来源引用（citations）**：RAG 回答附来源片段列表，「可追溯不等于绝对正确」：
 
-![知识来源引用](src/main/resources/img/带知识来源citation的回答.png)
+![知识来源引用](docs/blog/assets/2026-09-23-answer-with-citations.png)
 
 **HITL 提交制（审批是事件、Agent 最小权限）**：高风险售后操作由 LLM 三态资格裁决后建 PENDING 工单进管理台即返回，Agent 只有提交权没有执行权；管理员批准触发业务系统执行（mock），客户经工单查询工具读进度：
 
-![HITL 工单审批](src/main/resources/img/HITL-高风险Agent只有提交权没有执行权.png)
+![HITL 工单审批](docs/blog/assets/2026-09-23-hitl-2-admin-ticket.png)
 
 **审批后的状态验证**：客户问「ORD-001 退货状态」，工具如实转述工单四态与业务执行结果：
 
-![HITL 状态验证](src/main/resources/img/HITL-高风险操作通过后的状态验证.png)
+![HITL 状态验证](docs/blog/assets/2026-09-23-hitl-3-status-verified.png)
 
 **内部可观测**：每次 LLM 调用留痕 `scene / model / durMs / attempt`，System prompt 分段组装、RAG 漏斗逐段明细全程 DEBUG 可查：
 
-![内部日志](src/main/resources/img/意图识别部分日志内容.png)
+![内部日志](docs/blog/assets/2026-09-23-pipeline-intent-log.png)
 
 **全链路遥测仪表盘**（/obs 页）：16 字段遥测快照——流量读数（对话请求/总轮次/降级占比）、结局分布与 RAG 命中双环图、工具失败/HITL 触发/故障转移耗尽/待审批工单等信号读数：
 
-![全链路遥测快照](src/main/resources/img/可观测性-全链路遥测快照.png)
+![全链路遥测快照](docs/blog/assets/2026-09-23-obs-telemetry-snapshot.png)
 
 ## 架构总览
 

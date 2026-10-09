@@ -12,6 +12,7 @@ import com.agentdemo007.gateway.selector.ModelSelector;
 import com.agentdemo007.gateway.selector.TagBasedSelector;
 import com.agentdemo007.gateway.selector.WeightBasedSelector;
 import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.observability.AgentTracer;
 import com.agentdemo007.resilience.BackoffStrategy;
 import com.agentdemo007.resilience.ExceptionTriage;
 import com.agentdemo007.resilience.ResilientExecutor;
@@ -129,8 +130,8 @@ public class GatewayConfig {
 
     @Bean
     FailoverExecutor failoverExecutor(ResilientExecutor resilientExecutor, RetryPolicy retryPolicy,
-                                      ExceptionTriage triage, AgentMetrics metrics) {
-        return new FailoverExecutor(resilientExecutor, retryPolicy, triage, metrics);
+                                      ExceptionTriage triage, AgentMetrics metrics, AgentTracer tracer) {
+        return new FailoverExecutor(resilientExecutor, retryPolicy, triage, metrics, tracer);
     }
 
     // ---- LLM 收口入口 + 注入隔离器（Phase 6 会话理解层辅助调用：摘要/改写/分类经此出站） ----
@@ -144,8 +145,9 @@ public class GatewayConfig {
     ChatLlmService chatLlmService(UnifiedModelGateway gateway, ModelConfigCenter center,
                                   ModelSelector selector, PromptSanitizer sanitizer,
                                   @Value("${llm.thinking.enabled:true}") boolean thinkingEnabled,
-                                  @Value("${llm.max-tokens:1024}") int maxTokens) {
-        return new ChatLlmService(gateway, center, selector, sanitizer, thinkingEnabled, maxTokens);
+                                  @Value("${llm.max-tokens:1024}") int maxTokens,
+                                  AgentTracer tracer) {
+        return new ChatLlmService(gateway, center, selector, sanitizer, thinkingEnabled, maxTokens, tracer);
     }
 
     @Bean

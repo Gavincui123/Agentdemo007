@@ -1,11 +1,13 @@
 package com.agentdemo007.persistence.mq;
 
 import com.agentdemo007.config.RabbitMqConfig;
+import com.agentdemo007.observability.AgentTracer;
 import com.agentdemo007.observability.audit.AuditEvent;
 import com.agentdemo007.observability.trace.TraceContextPropagator;
 import com.agentdemo007.persistence.entity.AuditEventEntity;
 import com.agentdemo007.persistence.repository.AuditEventRepository;
 import com.rabbitmq.client.Channel;
+import io.opentelemetry.api.trace.SpanKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -40,15 +42,17 @@ public class AuditConsumer {
 
     private final AuditEventRepository repository;
     private final TraceContextPropagator propagator;
+    private final AgentTracer tracer;
 
     public AuditConsumer(AuditEventRepository repository) {
-        this(repository, TraceContextPropagator.NO_OP);
+        this(repository, TraceContextPropagator.NO_OP, AgentTracer.NO_OP);
     }
 
     @Autowired
-    public AuditConsumer(AuditEventRepository repository, TraceContextPropagator propagator) {
+    public AuditConsumer(AuditEventRepository repository, TraceContextPropagator propagator, AgentTracer tracer) {
         this.repository = repository;
         this.propagator = propagator;
+        this.tracer = tracer;
     }
 
     /**
@@ -71,10 +75,15 @@ public class AuditConsumer {
             carrier.put(TraceContextPropagator.TRACEPARENT_HEADER, traceparent);
         }
         AutoCloseable scope = propagator.restoreScope(carrier);
+        // Phase 23 消费 span（CONSUMER）：OTel 传播实现下 restoreScope 已把提取上下文置 current，
+        // child span 归属生产侧 trace（跨进程瀑布连通）；Mdc 桥接实现下 tracer=NO_OP 零副作用
+        AgentTracer.SpanHandle span = tracer.startSpan("agent.mq.audit.process", SpanKind.CONSUMER,
+                "agent.mq.queue", RabbitMqConfig.AUDIT_EVENT_QUEUE);
         try {
             repository.save(AuditEventEntity.from(event));
             channel.basicAck(tag, false);
         } catch (Exception e) {
+            span.error(e);
             log.warn("审计事件落库失败，死信到 DLQ：type={} traceId={}",
                     event.type(), event.traceId(), e);
             try {
@@ -83,6 +92,7 @@ public class AuditConsumer {
                 log.warn("basicNack 失败 tag={}", tag, nackEx);
             }
         } finally {
+            span.end();
             try {
                 scope.close();
             } catch (Exception closeEx) {

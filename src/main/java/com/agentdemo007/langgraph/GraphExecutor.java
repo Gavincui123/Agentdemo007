@@ -9,6 +9,8 @@ import com.agentdemo007.common.pipeline.PipelineStep;
 import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.common.pipeline.StepOutcomeAuditor;
 import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.observability.AgentTracer;
+import io.opentelemetry.api.trace.SpanKind;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphStateException;
 import org.bsc.langgraph4j.state.AgentState;
@@ -48,6 +50,7 @@ public class GraphExecutor implements PipelineExecutor {
     private final DegradationPhraseCenter phraseCenter;
     private final int maxIterations;
     private final AgentMetrics metrics;
+    private final AgentTracer tracer;
 
     public GraphExecutor(List<PipelineStep> steps, DegradationPhraseCenter phraseCenter) {
         this(steps, phraseCenter, DEFAULT_MAX_ITERATIONS, AgentMetrics.NO_OP);
@@ -57,27 +60,40 @@ public class GraphExecutor implements PipelineExecutor {
         this(steps, phraseCenter, maxIterations, AgentMetrics.NO_OP);
     }
 
-    /** 全参构造器：{@code LangGraphConfig} @Bean 注入真实 {@link AgentMetrics}（终端指标收口）。 */
+    /** 全参构造器（既有）：{@code LangGraphConfig} @Bean 注入真实 {@link AgentMetrics}。 */
     public GraphExecutor(List<PipelineStep> steps, DegradationPhraseCenter phraseCenter,
                          int maxIterations, AgentMetrics metrics) {
+        this(steps, phraseCenter, maxIterations, metrics, AgentTracer.NO_OP);
+    }
+
+    /** 全参构造器（Phase 23 追加 tracer）：链路门面随指标一并注入，per-node span 由 {@link GraphNode} 开合。 */
+    public GraphExecutor(List<PipelineStep> steps, DegradationPhraseCenter phraseCenter,
+                         int maxIterations, AgentMetrics metrics, AgentTracer tracer) {
         this.steps = steps;
         this.phraseCenter = phraseCenter;
         this.maxIterations = maxIterations;
         this.metrics = metrics;
+        this.tracer = tracer;
     }
 
     @Override
     public PipelineResult run(PipelineContext context) {
         long start = System.nanoTime();
+        // Phase 23 root span：镜像线性编排器（属性 mode=graph 区分编排模式）；makeCurrent 挂子节点 span
+        AgentTracer.SpanHandle rootSpan = tracer.startSpan("agent.pipeline", SpanKind.INTERNAL,
+                "agent.session.id", context.sessionId(), "agent.pipeline.mode", "graph");
+        io.opentelemetry.context.Scope rootScope = rootSpan.makeCurrent();
         try {
             return runGraph(context);
         } finally {
             metrics.recordPipelineDuration(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+            rootSpan.end();
+            rootScope.close();
         }
     }
 
     private PipelineResult runGraph(PipelineContext context) {
-        List<GraphNode> nodes = steps.stream().map(GraphNode::new).toList();
+        List<GraphNode> nodes = steps.stream().map(s -> new GraphNode(s, tracer, metrics)).toList();
         CompiledGraph<AgentState> compiled;
         try {
             compiled = new AgentStateGraph(nodes).build().compile();

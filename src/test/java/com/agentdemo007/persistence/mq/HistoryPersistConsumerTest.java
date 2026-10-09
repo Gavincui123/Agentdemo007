@@ -1,6 +1,7 @@
 package com.agentdemo007.persistence.mq;
 
 import com.agentdemo007.common.trace.TraceId;
+import com.agentdemo007.observability.AgentTracer;
 import com.agentdemo007.observability.trace.MdcTraceContextPropagator;
 import com.agentdemo007.observability.trace.TraceContextPropagator;
 import com.agentdemo007.persistence.entity.ChatTurnEntity;
@@ -86,7 +87,7 @@ class HistoryPersistConsumerTest {
             seenTrace.set(TraceId.current()); // 消费线程恢复后的 current traceId
             return inv.getArgument(0);
         });
-        HistoryPersistConsumer tracingConsumer = new HistoryPersistConsumer(capturingRepo, propagator);
+        HistoryPersistConsumer tracingConsumer = new HistoryPersistConsumer(capturingRepo, propagator, AgentTracer.NO_OP);
         ChatTurnEvent event = new ChatTurnEvent(
                 traceId, "sess-9", "你好", "您好", null, false, null, OffsetDateTime.now());
 

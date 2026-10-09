@@ -7,10 +7,14 @@ import com.agentdemo007.common.pipeline.StepOutcome;
 import com.agentdemo007.common.pipeline.StepOutcomeAuditor;
 import com.agentdemo007.common.progress.ProgressEmitter;
 import com.agentdemo007.common.progress.ProgressEvent;
+import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.observability.AgentTracer;
+import io.opentelemetry.api.trace.SpanKind;
 import org.bsc.langgraph4j.action.AsyncNodeAction;
 import org.bsc.langgraph4j.state.AgentState;
 
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 图节点适配层（Phase 14·LangGraph 节点）。
@@ -42,9 +46,19 @@ public class GraphNode {
     public static final String OUTCOME_KEY = "__stepOutcome__";
 
     private final PipelineStep step;
+    private final AgentTracer tracer;
+    private final AgentMetrics metrics;
 
+    /** 既有构造（测试便利）：链路/指标均为空实现。 */
     public GraphNode(PipelineStep step) {
+        this(step, AgentTracer.NO_OP, AgentMetrics.NO_OP);
+    }
+
+    /** 全参构造（Phase 23）：由 {@code GraphExecutor} 注入门面，per-node span 与耗时 Timer 镜像线性编排器。 */
+    public GraphNode(PipelineStep step, AgentTracer tracer, AgentMetrics metrics) {
         this.step = step;
+        this.tracer = tracer;
+        this.metrics = metrics;
     }
 
     /** 节点名，委托包裹步骤（审计/日志用，镜像 {@link PipelineStep#name()}）。 */
@@ -67,11 +81,16 @@ public class GraphNode {
                                     + "）；图执行前须由 AgentStateGraph 注入"));
             ProgressEmitter emitter = context.emitter(); // #136 图模式进度对齐线性：NO_OP 默认，chatStream 注入 Sse 桥接
             emitter.emit(new ProgressEvent.StepStarted(step.name()));
+            // Phase 23 per-step span：与线性编排器同点位同属性（瀑布图两模式一致）
+            AgentTracer.SpanHandle stepSpan = tracer.startSpan("agent.step", SpanKind.INTERNAL,
+                    "agent.step.name", step.name());
+            long stepStart = System.nanoTime();
             StepOutcome outcome;
             try {
                 outcome = step.process(context);
             } catch (Exception e) {
                 // 异常收口（镜像线性编排器 per-step catch）：审计 + 发 INTERNAL 短路供路由至 END
+                finishStepSpan(step.name(), stepSpan, "exception", DegradationScenario.INTERNAL, stepStart, e);
                 StepOutcomeAuditor.auditException(context, step.name(), e.getMessage());
                 emitter.emit(new ProgressEvent.StepFinished(step.name(),
                         ProgressEvent.Outcome.EXCEPTION, DegradationScenario.INTERNAL));
@@ -81,10 +100,16 @@ public class GraphNode {
             // per-step 副作用（审计 + markDegraded）——经共享 StepOutcomeAuditor 收口，
             // 与线性编排器等价（degraded 须跨节点累积，否则 terminal 产出不一致）
             StepOutcomeAuditor.audit(context, step.name(), outcome);
+            String outcomeTag = "proceed";
+            DegradationScenario scenario = null;
             if (outcome instanceof StepOutcome.ShortCircuit sc) {
+                outcomeTag = "short_circuit";
+                scenario = sc.scenario();
                 emitter.emit(new ProgressEvent.StepFinished(step.name(),
                         ProgressEvent.Outcome.SHORT_CIRCUIT, sc.scenario()));
             } else if (outcome instanceof StepOutcome.Degrade d) {
+                outcomeTag = "degrade";
+                scenario = d.scenario();
                 emitter.emit(new ProgressEvent.StepFinished(step.name(),
                         ProgressEvent.Outcome.DEGRADE, d.scenario()));
             } else {
@@ -92,7 +117,21 @@ public class GraphNode {
                 emitter.emit(new ProgressEvent.StepFinished(step.name(),
                         ProgressEvent.Outcome.PROCEED, null));
             }
+            finishStepSpan(step.name(), stepSpan, outcomeTag, scenario, stepStart, null);
             return Map.of(OUTCOME_KEY, outcome);
         });
+    }
+
+    /** per-step span 收口（镜像线性编排器同名助手）：outcome/scenario 属性 + 耗时 Timer + end。 */
+    private void finishStepSpan(String stepName, AgentTracer.SpanHandle stepSpan, String outcome,
+                                DegradationScenario scenario, long stepStartNanos, Throwable error) {
+        stepSpan.attr("agent.step.outcome", outcome);
+        stepSpan.attr("agent.step.scenario", scenario != null ? scenario.name() : "none");
+        if (error != null) {
+            stepSpan.error(error);
+        }
+        metrics.recordStepDuration(stepName,
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - stepStartNanos), outcome);
+        stepSpan.end();
     }
 }

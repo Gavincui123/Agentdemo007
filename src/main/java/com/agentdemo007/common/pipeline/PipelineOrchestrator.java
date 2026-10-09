@@ -5,6 +5,8 @@ import com.agentdemo007.common.degradation.DegradationScenario;
 import com.agentdemo007.common.progress.ProgressEmitter;
 import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.observability.AgentTracer;
+import io.opentelemetry.api.trace.SpanKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -49,21 +51,34 @@ public class PipelineOrchestrator implements PipelineExecutor {
     private final List<PipelineStep> steps;
     private final DegradationPhraseCenter phraseCenter;
     private final AgentMetrics metrics;
+    private final AgentTracer tracer;
 
     /** 非 Spring 单测 / 无指标后端便利构造（指标写入空实现，永不外泄）。 */
     public PipelineOrchestrator(List<PipelineStep> steps, DegradationPhraseCenter phraseCenter) {
         this(steps, phraseCenter, AgentMetrics.NO_OP);
     }
 
-    @Autowired
     public PipelineOrchestrator(List<PipelineStep> steps, DegradationPhraseCenter phraseCenter, AgentMetrics metrics) {
+        this(steps, phraseCenter, metrics, AgentTracer.NO_OP);
+    }
+
+    @Autowired
+    public PipelineOrchestrator(List<PipelineStep> steps, DegradationPhraseCenter phraseCenter,
+                                AgentMetrics metrics, AgentTracer tracer) {
         this.steps = steps;
         this.phraseCenter = phraseCenter;
         this.metrics = metrics;
+        this.tracer = tracer;
     }
 
     public PipelineResult run(PipelineContext context) {
         long start = System.nanoTime();
+        // Phase 23 root span：瀑布图顶层分段（HTTP server span 之下，per-step/LLM/RAG 之上）；
+        // 父上下文由线程携带（同步=请求线程 / SSE=TraceSnapshot 恢复），MdcBackedIdGenerator 保证
+        // traceId 与 X-Trace-Id 响应头同源。makeCurrent 使 per-step span 默认挂到本 span 之下。
+        AgentTracer.SpanHandle rootSpan = tracer.startSpan("agent.pipeline", SpanKind.INTERNAL,
+                "agent.session.id", context.sessionId(), "agent.pipeline.mode", "linear");
+        io.opentelemetry.context.Scope rootScope = rootSpan.makeCurrent();
         ProgressEmitter emitter = context.emitter(); // #136：NO_OP 默认；chatStream 注入 Sse 桥接
         try {
             for (PipelineStep step : steps) {
@@ -77,9 +92,15 @@ public class PipelineOrchestrator implements PipelineExecutor {
                 }
                 emitter.emit(new ProgressEvent.StepStarted(step.name()));
                 StepOutcome outcome;
+                // Phase 23 per-step span：与 StepStarted/Finished 事件同点位开合——瀑布图里每步一段，
+                // outcome/scenario 落属性；同步补 per-step 耗时 Timer（Phase 15 起无计时，博客记录过的欠账）
+                AgentTracer.SpanHandle stepSpan = tracer.startSpan("agent.step", SpanKind.INTERNAL,
+                        "agent.step.name", step.name());
+                long stepStart = System.nanoTime();
                 try {
                     outcome = step.process(context);
                 } catch (Exception e) {
+                    finishStepSpan(step.name(), stepSpan, "exception", DegradationScenario.INTERNAL, stepStart, e);
                     log.error("步骤 {} 执行异常，收口到 INTERNAL 话术：{}", step.name(), e.getMessage(), e);
                     emitter.emit(new ProgressEvent.StepFinished(step.name(),
                             ProgressEvent.Outcome.EXCEPTION, DegradationScenario.INTERNAL));
@@ -90,6 +111,7 @@ public class PipelineOrchestrator implements PipelineExecutor {
                 }
                 if (outcome instanceof StepOutcome.ShortCircuit sc) {
                     log.warn("步骤 {} 触发短路：{}（零 LLM，跳过后续）", step.name(), sc.scenario());
+                    finishStepSpan(step.name(), stepSpan, "short_circuit", sc.scenario(), stepStart, null);
                     emitter.emit(new ProgressEvent.StepFinished(step.name(),
                             ProgressEvent.Outcome.SHORT_CIRCUIT, sc.scenario()));
                     StepOutcomeAuditor.audit(context, step.name(), outcome);
@@ -98,6 +120,7 @@ public class PipelineOrchestrator implements PipelineExecutor {
                 }
                 if (outcome instanceof StepOutcome.Degrade d) {
                     log.warn("步骤 {} 触发降级：{}（继续推进）", step.name(), d.scenario());
+                    finishStepSpan(step.name(), stepSpan, "degrade", d.scenario(), stepStart, null);
                     emitter.emit(new ProgressEvent.StepFinished(step.name(),
                             ProgressEvent.Outcome.DEGRADE, d.scenario()));
                     StepOutcomeAuditor.audit(context, step.name(), outcome);
@@ -106,13 +129,29 @@ public class PipelineOrchestrator implements PipelineExecutor {
                 }
                 // Proceed / Retry：推进下一步（线性模式不图循环，Retry 在此等价 Proceed，§5.13）
                 // —— 重试语义由各 step 内部自理（如 ToolExecutor 的自纠正循环）
+                finishStepSpan(step.name(), stepSpan, "proceed", null, stepStart, null);
                 emitter.emit(new ProgressEvent.StepFinished(step.name(),
                         ProgressEvent.Outcome.PROCEED, null));
             }
             return terminal(context);
         } finally {
             metrics.recordPipelineDuration(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+            rootSpan.end();
+            rootScope.close(); // 关 scope 还原线程上下文（先 end root 再还原，耗时统计完整）
         }
+    }
+
+    /** per-step span 收口（四条出口路径各调一次恰一次）：outcome/scenario 属性 + 耗时 Timer + end。 */
+    private void finishStepSpan(String stepName, AgentTracer.SpanHandle stepSpan, String outcome,
+                                DegradationScenario scenario, long stepStartNanos, Throwable error) {
+        stepSpan.attr("agent.step.outcome", outcome);
+        stepSpan.attr("agent.step.scenario", scenario != null ? scenario.name() : "none");
+        if (error != null) {
+            stepSpan.error(error);
+        }
+        metrics.recordStepDuration(stepName,
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - stepStartNanos), outcome);
+        stepSpan.end();
     }
 
     private PipelineResult terminal(PipelineContext context) {

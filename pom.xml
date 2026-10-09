@@ -41,6 +41,44 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- OpenTelemetry 链路追踪（Boot 4 原生 starter：Micrometer Tracing 桥接 OTel SDK + OTLP 导出，
+             官方文档 https://docs.spring.io/spring-boot/reference/actuator/tracing.html 单依赖即装）。
+             分工：基础设施观测（HTTP server/client、JDBC）走 starter 自动装配；高价值 span（15 步流水线、
+             LLM 网关 gen_ai 语义、RAG 漏斗）手动埋；MQ trace 传播走既有 TraceContextPropagator seam
+             （OtelTraceContextPropagator @Primary 替换 MdcTraceContextPropagator，换实现不换收口）。
+             不引 OTel javaagent：Boot 4.1.1/Framework 7 过新需额外实测兼容，且镜像免带 agent jar
+             （save/scp/load 链路零改动、进程内无 agent 常驻开销）。OTLP 导出经
+             management.opentelemetry.tracing.export.otlp.* 配置，OTLP_EXPORTER_ENDPOINT 未配置时不导出，
+             dev/test 行为与无 OTel 一致。可视化后端 = 本地/生产 Jaeger all-in-one（docker-compose.observability.yml）。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+
+        <!-- 指标暴露：/actuator/prometheus。此前 application.yml 已 expose prometheus 端点但缺 registry
+             依赖（jar 内无 micrometer-registry-prometheus），端点实际 404——本依赖补齐该半成品。
+             Jaeger 管链路（trace）可视化，Prometheus 文本端点管指标（metrics）抓取，Grafana 面板二期。 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- OTel SDK trace 模块显式 compile（starter 传递给它的 scope 是 runtime，编译不可见）：
+             MdcBackedIdGenerator 与 SdkTracerProviderBuilderCustomizer 签名引用
+             io.opentelemetry.sdk.trace.* 类型，必须编译期可见。版本由 Boot parent 的
+             opentelemetry-bom 统一管理（1.62.0），不写死。 -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-trace</artifactId>
+        </dependency>
+
+        <!-- 单测用 InMemorySpanExporter（span 层级/属性断言），仅测试期。 -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>

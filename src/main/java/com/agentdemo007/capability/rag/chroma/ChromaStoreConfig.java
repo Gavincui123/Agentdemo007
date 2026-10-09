@@ -36,13 +36,22 @@ public class ChromaStoreConfig {
     private static final Logger log = LoggerFactory.getLogger(ChromaStoreConfig.class);
 
     @Bean
-    RestTemplate chromaRestTemplate(ChromaProperties props) {
+    RestTemplate chromaRestTemplate(ChromaProperties props,
+                                    org.springframework.beans.factory.ObjectProvider<com.agentdemo007.observability.AgentTracer> tracer,
+                                    org.springframework.beans.factory.ObjectProvider<io.opentelemetry.api.OpenTelemetry> openTelemetry) {
         // 超时预算治理：裸 RestTemplate 无超时（连接/读取无限挂起），对齐 embedding/reranker 惯例
         org.springframework.http.client.SimpleClientHttpRequestFactory f =
                 new org.springframework.http.client.SimpleClientHttpRequestFactory();
         f.setConnectTimeout(props.getConnectTimeoutMs());
         f.setReadTimeout(props.getReadTimeoutMs());
-        return new RestTemplate(f);
+        RestTemplate rt = new RestTemplate(f);
+        // Phase 23：Boot 4 已移除 RestTemplateBuilder（自动 client span 不可得），手写拦截器收口
+        // CLIENT span + W3C 注入（与 MQ 传播同口径）——Chroma 出站在瀑布图可见。
+        // ObjectProvider 缺省降级：切片测试的迷你上下文无 OTel bean 时不炸装配（拦截器退 no-op）
+        rt.getInterceptors().add(new com.agentdemo007.observability.trace.TraceClientInterceptor(
+                tracer.getIfAvailable(() -> com.agentdemo007.observability.AgentTracer.NO_OP),
+                openTelemetry.getIfAvailable(io.opentelemetry.api.OpenTelemetry::noop)));
+        return rt;
     }
 
     @Bean

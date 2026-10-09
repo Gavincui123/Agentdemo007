@@ -97,6 +97,35 @@ management:
     export:
       prometheus:
         enabled: true
+  # starter 会连带装配 OTLP metrics 导出（micrometer-registry-otlp，默认 url localhost:4318/v1/metrics）
+  # ——本应用指标走 /actuator/prometheus 文本端点（Jaeger 不收 metrics），硬关防 WARN 刷屏
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  # ---- OpenTelemetry 链路追踪（Boot 4 原生 spring-boot-starter-opentelemetry，OTel SDK 1.62）----
+  # 分工：trace 可视化走 Jaeger（docker-compose.observability.yml，OTLP/HTTP 导出）；
+  # metrics 仍走 /api/obs/summary 快照 + /actuator/prometheus 文本端点（Grafana 面板二期）。
+  # 属性名是 Boot 4 体系（management.opentelemetry.tracing.export.otlp.*），
+  # 与 3.x 的 management.otlp.tracing.*（deprecated 别名，勿用）不同。
+  tracing:
+    # 全采样：低流量 demo，span 量级 ~20/请求（15 步流水线 + LLM/RAG/MQ）可承受；
+    # 上量后调 0.25 并同步评估 max-queue-size（默认 0.1=十次对话九次 Jaeger 查不到，勿踩）
+    sampling:
+      probability: 1.0
+    export:
+      otlp:
+        # 导出总开关（缺省 true，这里默认关：dev/测试无 Jaeger，零外发零噪音）
+        enabled: ${OTLP_ENABLED:false}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          # 注意：endpoint/transport 等参数挂在 management.opentelemetry.tracing.*（Boot 4 体系），
+          # 与上面 enabled（management.tracing.*）不同前缀——写错前缀 exporter 静默不装配（实测踩过）。
+          # 且 Boot 4 把本值当完整 URL 直接 setEndpoint（不自动追加 /v1/traces），必须带信号路径
+          endpoint: ${OTLP_EXPORTER_ENDPOINT:http://localhost:4318/v1/traces}
+          timeout: 10s
 
 # ---- 日志 ----
 logging:
@@ -271,6 +300,14 @@ agentdemo:
 app:
   model-selector:
     strategy: ${MODEL_SELECTOR_STRATEGY:tag}
+  # ---- OpenTelemetry 应用侧装配开关（与 management.tracing.export.otlp.enabled 同 env 驱动）----
+  # true：OtelTraceContextPropagator 以 @Primary 替换 Mdc 桥接（MQ trace 传播走 W3C 真实现，
+  #       消费线程恢复 OTel 上下文，跨进程瀑布连通）
+  # false/缺省：MQ 传播退回 Mdc 桥接（行为与引入 OTel 前一致）
+  # 注意：traceId 对齐（MdcBackedIdGenerator）恒开、不挂本开关——它是响应头/UnifiedResponse/
+  #       logback 三处同源的应用契约不变式，与导出与否无关（见 OtelObservabilityConfig javadoc）
+  otel:
+    enabled: ${OTLP_ENABLED:false}
   # ---- 提示词源（[[q1-nacos-prompt-mgmt]]）：local/缺省→LocalPromptSource 内存源（dev）；
   #       nacos→PromptSourceConfig 装配 NacosPromptSource（经 AiService 拉取 + md5 gRPC 热推），
   #       复用 spring.nacos.config.* 连接参数。promptKey：system-prompt-segments（分段式系统

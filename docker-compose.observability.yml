@@ -1,0 +1,35 @@
+# =============================================================================
+# 可观测性后端（Phase 23·OpenTelemetry 集成）——trace 可视化后端 Jaeger all-in-one v2。
+#
+# 与应用主编排 docker-compose.prod.yml 分离：观测后端坏/停不影响业务接口（正交性口径同三条信道）。
+#
+# 分工：
+#   - 链路（trace）：应用 OTLP/HTTP 导出 → 本 Jaeger（4318），UI 瀑布图查全链路；
+#   - 指标（metrics）：/actuator/prometheus 文本端点（micrometer-registry-prometheus）+
+#     /api/obs/summary 快照，Grafana 面板二期再接。
+#
+# 端口纪律（生产）：
+#   - 4317/4318 绑宿主，供应用容器经 host.docker.internal 访问（同 Redis/Chroma 口径）——
+#     公网不可达由安全组保证（只放 80/443/8077，见 docs/guides/部署实录.md）；
+#   - UI 16686 只绑 127.0.0.1：公网永不直达，访问走 SSH 隧道
+#     `ssh -L 16686:127.0.0.1:16686 <server>` → http://localhost:16686。
+#
+# 镜像搬运（服务器连不上 Docker Hub，DNS 污染）：Mac `docker pull` → `docker save | gzip` →
+# scp → 服务器 `docker load`（同应用镜像链路，见 部署实录.md §3.1）。
+#
+# 启动：docker compose -f docker-compose.observability.yml up -d
+# 应用侧开关：OTLP_ENABLED=true + OTLP_EXPORTER_ENDPOINT=http://jaeger:4318/v1/traces（生产，
+#             同 compose 项目网络直连服务名，勿绕宿主端口——防火墙 reload 会丢转发包）
+#            / http://localhost:4318（本机直跑）
+# =============================================================================
+services:
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    container_name: agentdemo-jaeger
+    restart: unless-stopped
+    ports:
+      - "4317:4317"              # OTLP gRPC（保留，本应用走 HTTP）
+      - "4318:4318"              # OTLP HTTP（应用 OTLP_EXPORTER_ENDPOINT 指向这里）
+      - "127.0.0.1:16686:16686"  # UI：仅本机回环 + SSH 隧道，不占安全组端口
+    mem_limit: 384m              # 2026-10-08 服务器实测：available 1.6G 但 swap 已满，512m→384m 收口
+                                 # （demo 流量实际占 200~350m，in-memory 存储，容器重启丢 trace 可接受）

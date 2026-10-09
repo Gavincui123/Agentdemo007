@@ -5,6 +5,7 @@ import com.agentdemo007.common.pipeline.PipelineExecutor;
 import com.agentdemo007.common.pipeline.PipelineStep;
 import com.agentdemo007.langgraph.GraphExecutor;
 import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.observability.AgentTracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,8 +39,9 @@ public class LangGraphConfig {
     PipelineExecutor graphExecutor(List<PipelineStep> steps,
                                    DegradationPhraseCenter phraseCenter,
                                    AgentMetrics metrics,
+                                   AgentTracer tracer,
                                    @Value("${app.langgraph.max-iterations:25}") int maxIterations) {
         log.info("图编排已启用（mode=graph，节点数={}, maxIterations={}）", steps.size(), maxIterations);
-        return new GraphExecutor(steps, phraseCenter, maxIterations, metrics);
+        return new GraphExecutor(steps, phraseCenter, maxIterations, metrics, tracer);
     }
 }

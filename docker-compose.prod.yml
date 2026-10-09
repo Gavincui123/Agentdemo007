@@ -2,9 +2,10 @@
 # 生产部署编排（仅应用容器）——中间件全部复用服务器上已运行实例，不再新起：
 #   MySQL(demo-mysql:3379) / Redis(6379) / RabbitMQ(5672) / Nacos(8848+9848) / Chroma(demo-chroma:8001)
 #   应用经 host-gateway 访问宿主机发布端口（中间件容器端口均已 0.0.0.0 发布，host-gateway 可达）。
-# 公网入口只有 nginx(80) → 本应用宿主侧 8077（宿主 8080 已被 Nacos 占用）；绑定 docker0 网关 172.17.0.1，
-# 公网/回环均不可达——直连绕过闸口的路径堵死。容器内仍是 8080（healthcheck 对 localhost:8080，勿改）。
-# 启动：docker compose -f docker-compose.prod.yml up -d --build
+# 公网入口（v3 直连定案）：本应用宿主侧 "0.0.0.0:8077:8080" 直接对公网发布，闸口在应用内守门
+#   （AccessGateFilter：口令 + IP 日额；nginx 80 为旧项目，宿主 8080 已被 Nacos 占用）。
+#   容器内仍是 8080（healthcheck 对 localhost:8080，勿改）。
+# 启动：docker compose -f docker-compose.prod.yml up -d（不带 --build：镜像本机构建后 save/scp/load 搬运，见 DEPLOY.md）
 # =============================================================================
 services:
   agentdemo007:
@@ -36,7 +37,11 @@ services:
       - ./data/logs:/var/log/agentdemo007
     mem_limit: 1280m
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      # 不依赖 curl：上游底座自带什么会随换底漂移（resolute 事故），而 bash 是 Ubuntu
+      # required/essential 级包，任何 Ubuntu 底座必有。exec form 直接拉起 bash 内建 /dev/tcp
+      # 发 HTTP 探测 /health（只认状态行 200），连 CMD-SHELL 的 /bin/sh 转发层都省掉，
+      # 镜像内依赖收窄到仅 bash 一个。
+      test: ["CMD", "bash", "-c", 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "^HTTP/1.1 200" <&3']
       interval: 30s
       timeout: 5s
       retries: 5

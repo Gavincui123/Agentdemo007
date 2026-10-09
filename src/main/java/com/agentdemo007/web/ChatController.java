@@ -8,6 +8,7 @@ import com.agentdemo007.common.progress.ProgressEmitter;
 import com.agentdemo007.common.progress.ProgressEvent;
 import com.agentdemo007.common.response.UnifiedResponse;
 import com.agentdemo007.observability.AgentMetrics;
+import com.agentdemo007.observability.trace.TraceSnapshot;
 import com.agentdemo007.persistence.mq.ChatTurnFinalizer;
 import com.agentdemo007.session.MemberLevelService;
 import com.agentdemo007.session.profile.UserProfileService;
@@ -169,7 +170,18 @@ public class ChatController {
         emitter.onError(t -> dead.set(true));
         emitter.onCompletion(() -> dead.set(true));
         // 工作线程跑 runToSse：控制器立即返回 emitter（Spring MVC async 释放请求线程），真流式 flush
-        sseTaskExecutor.execute(() -> runToSse(emitter, request, sessionId, dead));
+        // Phase 23 观测上下文跨线程搬运：请求线程捕获（OTel server span 上下文 + MDC）→ sse- 线程恢复。
+        // 修复两处断链：①span 父子断根——sse 线程上开出的 span 成为无父孤立 trace；
+        // ②PipelineContext 在 sse 线程经 TraceId.current() 兜底生成新 UUID，与响应头 X-Trace-Id 不一致
+        TraceSnapshot snapshot = TraceSnapshot.capture();
+        sseTaskExecutor.execute(() -> {
+            try (AutoCloseable undo = snapshot.apply()) {
+                runToSse(emitter, request, sessionId, dead);
+            } catch (Exception e) {
+                // runToSse 内部已收口不抛；此 catch 仅为 AutoCloseable.close() 受检异常的编译兜底
+                log.warn("SSE 观测上下文恢复异常（不影响业务）：sessionId={} reason={}", sessionId, e.getMessage());
+            }
+        });
         return emitter;
     }
 

@@ -164,4 +164,39 @@ class RoutePromptBuilderTest {
         assertThat(withHint).contains("未完成的 refund_request 等待订单号");
         assertThat(without).doesNotContain("等待订单号");
     }
+
+    /**
+     * 2026-09-28 线上事故补齐（『退款流程是什么』被字面带偏成 refund_request）：11 意图须带一句话定义
+     * （prompt 工程核心：一句话定义远比枚举名可依赖，与 IntentRecognizerImpl 同款原则），
+     * 且咨询/办理分界的两个锚点定义必须在场。
+     */
+    @Test
+    void build_containsIntentDefinitions_withConsultVsActionAnchors() {
+        String p = builder.build(List.of(), "q");
+        assertThat(p).contains("意图定义（按定义选 intent，勿按字面关键词）");
+        for (String intent : baselines.knownIntents()) {
+            assertThat(p).contains("  - " + intent + "(");
+        }
+        assertThat(p).contains("faq_query(咨询政策/流程/规则等知识性信息");
+        assertThat(p).contains("refund_request(用户明确表达办理退款的动作诉求");
+    }
+
+    /** 显式分类原则 + faq 对照示例（咨询问法 → faq_query/knowledge_only/requires_workflow=false）。 */
+    @Test
+    void build_containsConsultPrinciple_andFaqContrastExample() {
+        String p = builder.build(List.of(), "退款流程是什么");
+        assertThat(p).contains("分类原则");
+        assertThat(p).contains("知识性问题");
+        assertThat(p).contains("示例（咨询退款政策/流程");
+        assertThat(p).contains("\"intent\":\"faq_query\"");
+        assertThat(p).contains("\"requires_workflow\":false");
+        assertThat(p).contains("\"fallback_policy\":\"knowledge_only\"");
+    }
+
+    /** pending 提示须带咨询豁免：政策/流程咨询不受未完成意图偏置（线上第 2 轮重复澄清的诱因之一）。 */
+    @Test
+    void build_withPendingIntent_carriesConsultCarveOut() {
+        String p = builder.build(null, "退款流程是什么", "refund_request");
+        assertThat(p).contains("不受未完成意图影响");
+    }
 }

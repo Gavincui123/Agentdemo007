@@ -1,10 +1,12 @@
 package com.agentdemo007.persistence.mq;
 
 import com.agentdemo007.config.RabbitMqConfig;
+import com.agentdemo007.observability.AgentTracer;
 import com.agentdemo007.observability.trace.TraceContextPropagator;
 import com.agentdemo007.persistence.entity.ChatTurnEntity;
 import com.agentdemo007.persistence.repository.ChatTurnRepository;
 import com.rabbitmq.client.Channel;
+import io.opentelemetry.api.trace.SpanKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -36,15 +38,18 @@ public class HistoryPersistConsumer {
 
     private final ChatTurnRepository repository;
     private final TraceContextPropagator propagator;
+    private final AgentTracer tracer;
 
     public HistoryPersistConsumer(ChatTurnRepository repository) {
-        this(repository, TraceContextPropagator.NO_OP);
+        this(repository, TraceContextPropagator.NO_OP, AgentTracer.NO_OP);
     }
 
     @Autowired
-    public HistoryPersistConsumer(ChatTurnRepository repository, TraceContextPropagator propagator) {
+    public HistoryPersistConsumer(ChatTurnRepository repository, TraceContextPropagator propagator,
+                                  AgentTracer tracer) {
         this.repository = repository;
         this.propagator = propagator;
+        this.tracer = tracer;
     }
 
     /**
@@ -67,10 +72,15 @@ public class HistoryPersistConsumer {
             carrier.put(TraceContextPropagator.TRACEPARENT_HEADER, traceparent);
         }
         AutoCloseable scope = propagator.restoreScope(carrier);
+        // Phase 23 消费 span（CONSUMER）：OTel 传播实现下 child span 归属生产侧 trace；
+        // Mdc 桥接实现下 tracer=NO_OP 零副作用
+        AgentTracer.SpanHandle span = tracer.startSpan("agent.mq.history.process", SpanKind.CONSUMER,
+                "agent.mq.queue", RabbitMqConfig.SESSION_PERSIST_QUEUE);
         try {
             repository.save(ChatTurnEntity.from(event));
             channel.basicAck(tag, false);
         } catch (Exception e) {
+            span.error(e);
             log.warn("会话持久化失败，死信到 DLQ：traceId={} sessionId={}",
                     event.traceId(), event.sessionId(), e);
             try {
@@ -79,6 +89,7 @@ public class HistoryPersistConsumer {
                 log.warn("basicNack 失败 tag={}", tag, nackEx);
             }
         } finally {
+            span.end();
             try {
                 scope.close();
             } catch (Exception closeEx) {

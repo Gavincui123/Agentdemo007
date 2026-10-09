@@ -23,6 +23,9 @@ package com.agentdemo007.eval;
  * @param zeroLlm                是否零 LLM（短路在模型调用前）
  * @param shortCircuit           是否话术短路
  * @param escalatedToModel       是否上交小模型仲裁（执行器不派生，跳过比较）
+ * @param routeIntent            业务意图名（routePlan.intent()，如 faq_query/refund_request——2026-09-28
+ *                               增：线上「退款流程是什么」被误判 refund_request 事故的回归锚点，
+ *                               {@code intent} 只承载 7 认知意图，钉不住业务层路由）
  * @param queryEnrichmentContains 期望补全槽含此精确词（Phase 20·T88 约束改写）
  * @param ragFragmentsContain    期望某 ragFragments 元素含此文本子串（T89 Hybrid 命中 / T90 时效标注）
  * @param hasFragments           期望 ragFragments 是否非空
@@ -30,6 +33,7 @@ package com.agentdemo007.eval;
 public record EvalExpected(String scenario, String intent, String route, String selectedModel,
                            Boolean degraded, String outcome, Boolean blocked,
                            Boolean zeroLlm, Boolean shortCircuit, Boolean escalatedToModel,
+                           String routeIntent,
                            String queryEnrichmentContains, String ragFragmentsContain, Boolean hasFragments) {
 
     /** 既有 10 参构造（Phase 15 调用方零改动；新字段缺省 null 不参与比较）。 */
@@ -37,6 +41,6 @@ public record EvalExpected(String scenario, String intent, String route, String 
                         Boolean degraded, String outcome, Boolean blocked,
                         Boolean zeroLlm, Boolean shortCircuit, Boolean escalatedToModel) {
         this(scenario, intent, route, selectedModel, degraded, outcome, blocked,
-                zeroLlm, shortCircuit, escalatedToModel, null, null, null);
+                zeroLlm, shortCircuit, escalatedToModel, null, null, null, null);
     }
 }
