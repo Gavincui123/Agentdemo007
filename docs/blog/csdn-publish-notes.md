@@ -43,11 +43,30 @@
 - **第十三章 · 链路可视化（2026-10-08 新增，已发布：article 167283735）**
   trace 信道从「一条线」升级成「一张图」：Boot 4 原生 spring-boot-starter-opentelemetry 埋点（不用 javaagent，部署链路零改动），15 步流水线、LLM 出站、RAG 漏斗、HTTP 出站、MQ 消费各有 span，Jaeger 瀑布图一屏读完一轮对话。traceId 对齐做成应用契约不变式（响应头 X-Trace-Id 直接搜 Jaeger）；Boot 4 属性前缀分裂与 endpoint 完整 URL 两个坑让 Jaeger 一度零数据（观测组件「安静地什么都不做」最危险）；顺手修掉 SSE 线程 traceId 断链线上 bug（21 span 修复后同链路）；Docker 构建解堵收口为零 RUN 层镜像 + bash /dev/tcp 探活。
 
+- **第十四章 · 意图识别换发动机：LingDT-Decision 接入（2026-10-24 新增，已发布：article 168978013）**
+  意图识别的 LLM 分类层从「通用小模型自由文本分类」换成决策型大模型 LingDT-Decision（蚂蚁 DTMaaS System One）：意图分类建模成一道 choice 题，choice/probabilities/confidence 原生结构化输出，解析缩成严格候选集校验，写死的 0.7 置信度换成模型真实分布确定度。兜底三件套：任何失败形态同轮回退通用小模型（用户无感）、单次失败熔断零等待直回（阈值 1，对齐「有同级兜底快速降级」口径）、冷却 30s 半开探测自动切回。最大教训：文档把 model 字段写成 URL query、实测网关只认请求体顶层——若非 curl 冒烟在构建镜像前抓住，兜底会把接入错误永久藏住（系统一切正常、功能等于没上线）：兜底做得越好，接入错误藏得越深，上线验收标准是「出站日志见 ok=true」。上线后截图评审又补两处：模型权重页/obs 台补录决策通道可见性、出站日志补 intent/confidence/query。
+
 ## 二、配图对照（csdn-images/ 目录，文件名带章节号）
 
 图片引用分两套：**源稿**（`docs/blog/*.zh.md`）引用 `assets/*.png`（供 GitHub 渲染）；**csdn-web/ 发布副本**引用 `../csdn-images/第NN章-*.png` 本地相对路径（2026-09-23 起；本机 Markdown 预览可直接显示，上传 CSDN 时取图也在这里）。`csdn-images/` 只含 PNG（避免误选 SVG）：
 
-第01章 pipeline-15-steps ｜ 第02章 prompt-assembly-flow ｜ 第03章 breaker-threshold-spectrum ｜ 第04章 memory-layers-lifespan ｜ 第05章 rag-funnel-numbers ｜ 第06章 a-d 四张（rag-poison-defense / decision-layers / hitl-checkpoint-persistence / access-gate-flow）｜ 第07章 data-source-alignment ｜ 第08章 a-b 两张（final-rounds-breakdown / latency-evolution）｜ 第09章 eval-suite-composition ｜ 第10章 sse-event-protocol ｜ 第11章 observability-three-channels ｜ 第12章 deploy-topology ｜ 第13章 示意图两张（otel-trace-flow / jaeger-waterfall-annotated）+ 实测截图五张（jaeger-search / jaeger-waterfall / jaeger-span-tags / jaeger-traceid-search / obs-dashboard，2026-10-08 生产实测）
+第01章 pipeline-15-steps ｜ 第02章 prompt-assembly-flow ｜ 第03章 breaker-threshold-spectrum ｜ 第04章 memory-layers-lifespan ｜ 第05章 rag-funnel-numbers ｜ 第06章 a-d 四张（rag-poison-defense / decision-layers / hitl-checkpoint-persistence / access-gate-flow）｜ 第07章 data-source-alignment ｜ 第08章 a-b 两张（final-rounds-breakdown / latency-evolution）｜ 第09章 eval-suite-composition ｜ 第10章 sse-event-protocol ｜ 第11章 observability-three-channels ｜ 第12章 deploy-topology ｜ 第13章 示意图两张（otel-trace-flow / jaeger-waterfall-annotated）+ 实测截图五张（jaeger-search / jaeger-waterfall / jaeger-span-tags / jaeger-traceid-search / obs-dashboard，2026-10-08 生产实测）｜ 第14章 示意图一张（lingdt-intent-chain）+ 实测截图四张（shot-lingdt-logs / -chat / -models / -obs，2026-10-24 本地全链路复验，query 用了第二章意图漂移事故原句「帮我开增值税专用发票」）
+
+**第十四章待办**（2026-10-24 晚）：①截图已齐并落位（4 张本地实测，源稿 assets/ 与 csdn-web 副本占位均已替换；chat 一张为追加图位——同句端到端出口，呼应第二章误判转人工事故）。②文章 id 168978013 已回填：csdn-web 系列目录第十四章行 + 本文件标题行（已完成）；ch13 副本尾部「下一章」链接已补（仓库侧）。**CSDN 后台还需手工两步**：a) 已发布的 ch13（article 167283735）文末补「下一章：意图识别换发动机」链接（同 ch12 先例）；b) 已发布的第十四章正文重贴最新 csdn-web 副本 + 按下表传 5 张图换图床链接。
+
+**第十四章传图对照表**（CSDN 编辑器里搜 `../csdn-images/第14章-` 可定位全部 5 处；把图从 csdn-images/ 拖到编辑器对应位置自动上传生成图床链接，再删掉本地路径行）：
+
+| # | 上传文件（docs/blog/csdn-images/） | 文中位置 | 图注关键词 |
+|---|---|---|---|
+| 1 | 第14章-lingdt-intent-chain.png | §四开头「升级后的完整链路：」之后 | 意图识别四级链路 |
+| 2 | 第14章-shot-lingdt-logs.png | §六「本地全链路复验的四张实测图」第 1 张 | 出站行自带决策结论 |
+| 3 | 第14章-shot-lingdt-chat.png | §六第 2 张 | 端到端出口、发票 FAQ 引用 |
+| 4 | 第14章-shot-lingdt-models.png | §六第 3 张 | 权重页第五张 LingDT 卡 |
+| 5 | 第14章-shot-lingdt-obs.png | §六第 4 张 | 可观测页「模型 5/5」 |
+
+**第十四章 2026-10-24 深夜复审修订**（线上已发布版若不重贴需手工同步 4 处）：①§六「指标」bullet 重写——原表述「/obs 台模型健康格直接可见 LingDT 成功率与时长」属过度承诺，实测 `recordModelCall` 打的 `agent.gateway.calls`/`agent.gateway.call.duration` 无 model 维度标签、是全通道混计，/obs 页「模型 x/y」只是计数信号；诚实口径=全局值看趋势、精确归因靠日志行。②§七欠账新增第 7 条「模型指标没有 model 维度」（与①同源，待修时给指标加 model 标签，注意 cardinality）。③§三末行 `-27b` 加注「测试夹具路由名，非生产值」。④§四熔断代码块锚点补行号 `CircuitBreakerGuard.java:36`。两份 md（源稿+csdn-web 副本）已同步，diff 质检仅剩既定链接/路径变换。
+
+**第十四章评审修复轮**（2026-10-24 深夜，按优先级修复 review 发现，1404 测试绿）：代码修了 8 处——instructions OTHER 双重语义改单义、lingdt.enabled=true 三要素 fail-fast、snippet 剥控制符+码点截断、熔断开路快速失败入指标、guard 开路文案中性化、合成条目撞名查重（权重页+obs 双侧）、超时 int 域校验、yml 注释 body 顶层口径。文章随之又同步两处：§四熔断代码块引用改为「快速走兜底通道」、§六指标 bullet 补「开路快速失败同样计败」。**线上版重贴时以最新 csdn-web 副本为准**。
 
 **第十三章截图已齐**（2026-10-08 晚）：原计划 6 个截图位合并为 5 张入文（13-4/13-5 并入瀑布图说明），源稿与 csdn-web 副本均已替换占位。发布时上传 `csdn-images/` 里 7 张第13章-*.png（2 示意 + 5 截图）并替换本地路径为图床链接。
 

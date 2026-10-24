@@ -91,6 +91,24 @@ class IntentRecognitionStepTest {
     }
 
     @Test
+    void lingDtLowConfidenceOther_degradesUnknownIntent() {
+        // LingDT 真实置信度透传后 0.6 闸门首次真实生效（通用通道写死 0.7 恒过线）：
+        // OTHER/0.55 兜底——intent 仍 OTHER（路由表只按意图值映射，路由不变），但降级事件
+        // 入账、confidence 重置 0（2026-10-24 review 钉住该交互防回归）
+        when(recognizer.recognize(anyString(), anyString(), anyList()))
+                .thenReturn(new IntentCategory(Intent.OTHER, 0.55));
+        PipelineContext ctx = new PipelineContext("s1", "这双鞋的材质透气吗");
+        ctx.setStandardQuery(StandardQuery.of("这双鞋的材质透气吗"));
+
+        StepOutcome outcome = step.process(ctx);
+
+        assertThat(outcome).isInstanceOf(StepOutcome.Degrade.class);
+        assertThat(((StepOutcome.Degrade) outcome).scenario()).isEqualTo(DegradationScenario.UNKNOWN_INTENT);
+        assertThat(ctx.intent()).isEqualTo(Intent.OTHER);
+        assertThat(ctx.intentConfidence()).isZero();
+    }
+
+    @Test
     void intentAlreadySet_skipsRecognition_proceeds() {
         // 模拟前置 KeywordTriageStep(@Order 150) 已分诊：intent 已设为 CHIT_CHAT。
         // 桩 recognize 返回不同意图(REASONING)：若误重识别会覆盖 CHIT_CHAT，断言即失败

@@ -32,11 +32,13 @@ public final class CircuitBreakerGuard {
         this.channelName = channelName;
     }
 
-    /** 执行一次外部调用：熔断开启 → 立即抛（调用方降级本地通道）；成功记成功、异常记失败。 */
+    /** 执行一次外部调用：熔断开启 → 立即抛（调用方走各自的兜底通道）；成功记成功、异常记失败。 */
     public <T> T call(Supplier<T> action) {
         if (!breaker.allow(key)) {
+            // 措辞中性：RAG 通道的兜底是本地 BM25，意图决策通道（LingDT）的兜底是通用小模型——
+            // 开路文案不预设「本地」，避免排障时被误导（2026-10-24 review 收口）。
             throw new IllegalStateException(
-                    channelName + " 熔断开启中（近期连续失败，快速降级本地通道）");
+                    channelName + " 熔断开启中（近期连续失败，快速走兜底通道）");
         }
         try {
             T result = action.get();

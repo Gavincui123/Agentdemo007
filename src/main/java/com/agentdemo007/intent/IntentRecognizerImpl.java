@@ -18,7 +18,10 @@ import java.util.stream.Collectors;
  * <ol>
  *   <li><b>规则前置</b>：{@link RuleMatcher#match} 命中（含注入胜出）→ 直接返回，零 LLM。
  *       注入（{@link Intent#INJECTION}）在此拦截，保证注入路径零 LLM（§5.11）。</li>
- *   <li><b>小模型分类</b>：规则无定论（冲突/无命中）→ 经 {@link ChatLlmService} 收口调用小模型
+ *   <li><b>决策型大模型</b>（2026-10-24 接入，可选）：{@code lingdt.enabled=true} 时规则无定论
+ *       先经 {@link LingDtDecisionClient}（LingDT-Decision choice 决策，真实 confidence 透传）；
+ *       不可用<b>同轮自动回退</b>下一层，熔断开路零等待直回、冷却后自动切回。</li>
+ *   <li><b>小模型分类</b>：LingDT 未启用/不可用 → 经 {@link ChatLlmService} 收口调用小模型
  *       （{@link Intent#CHIT_CHAT} 通道）分类，解析输出为 {@link Intent}。</li>
  *   <li><b>兜底</b>：模型不可用或输出不可解析 → {@link IntentCategory#unknown()}（{@link Intent#OTHER}，
  *       §5.12 兜底 UNKNOWN，不阻塞）。</li>
@@ -39,9 +42,17 @@ public class IntentRecognizerImpl implements IntentRecognizer {
     private final RuleMatcher ruleMatcher;
     private final ChatLlmService llm;
 
+    /** 决策型大模型出站（2026-10-24 接入 LingDT-Decision）；null=未启用（lingdt.enabled=false），走原通用小模型通道。 */
+    private final LingDtDecisionClient lingDt;
+
     public IntentRecognizerImpl(RuleMatcher ruleMatcher, ChatLlmService llm) {
+        this(ruleMatcher, llm, null);
+    }
+
+    public IntentRecognizerImpl(RuleMatcher ruleMatcher, ChatLlmService llm, LingDtDecisionClient lingDt) {
         this.ruleMatcher = ruleMatcher;
         this.llm = llm;
+        this.lingDt = lingDt;
     }
 
     @Override
@@ -57,8 +68,21 @@ public class IntentRecognizerImpl implements IntentRecognizer {
         if (rule.isPresent()) {
             return rule.get();
         }
-        // 2. 小模型分类（规则无定论时升级）——分类用改写后的自足 query（指代已消解）
+        // 2. 模型分类（规则无定论时升级）——分类用改写后的自足 query（指代已消解）
         try {
+            // 2a. 决策型大模型优先（LingDT-Decision，2026-10-24 接入）：choice 决策天然对齐意图分类，
+            //     返回模型对齐的真实 confidence（替代通用通道写死的 0.7）。任何失败（HTTP/超时/业务码/
+            //     解析/熔断开路）同轮自动回退 2b 通用小模型——LingDT 不可用不暴露给用户；
+            //     熔断开路时零等待直接回退（client 内快速短路），冷却后半开探测自动切回。
+            if (lingDt != null) {
+                try {
+                    LingDtDecisionClient.Decision decision = lingDt.classify(classifyQuery, history);
+                    return new IntentCategory(decision.intent(), decision.confidence());
+                } catch (Exception e) {
+                    log.warn("意图识别LingDT不可用，本轮回退通用小模型：reason={}", e.getMessage());
+                }
+            }
+            // 2b. 通用小模型分类（原通道，LingDT 未启用/不可用时的兜底——行为与接入前完全一致）
             String prompt = buildClassifyPrompt(classifyQuery, history);
             String reply = llm.decide(prompt, "意图识别");
             Intent parsed = parseIntent(reply);
@@ -77,10 +101,11 @@ public class IntentRecognizerImpl implements IntentRecognizer {
      * 模型可选意图的业务级定义（提示词工程核心）：一句话定义远比枚举名可依赖——跨模型稳定性的
      * 关键在任务定义 + 分类原则 + few-shot 示例，而非模型自身"常识"。
      * {@link Intent#TRANSFER_TO_HUMAN}（用户显式诉求，关键词层 0.95 触发）与 {@link Intent#INJECTION}
-     * （规则层独占，零 LLM）不进模型候选——实测模型把"帮我开增值税专用票"判成转人工 →
+     * （规则层独占，零 LLM）不进模型候选——实测模型把"帮我开增值税专用发票"判成转人工 →
      * HitlStep 建工单短路，业务问题被话术劫持（意图漂移）。
+     * 包级可见：{@link LingDtDecisionClient} 以此为 criteria 单一真源（choice 选项名→定义），不另维护词表。
      */
-    private static final Map<Intent, String> MODEL_CANDIDATES = Map.of(
+    static final Map<Intent, String> MODEL_CANDIDATES = Map.of(
             Intent.CHIT_CHAT, "闲聊：问候、寒暄、情绪表达、与业务无关的闲谈",
             Intent.REASONING, "推理：需要计算、对比、分析、总结或解释因果的问题",
             Intent.LONG_CONTEXT, "长上下文：用户提供大段材料并要求基于材料处理",
@@ -158,7 +183,8 @@ public class IntentRecognizerImpl implements IntentRecognizer {
         return intent != Intent.TRANSFER_TO_HUMAN && intent != Intent.INJECTION;
     }
 
-    private String label(ChatMessage m) {
+    /** 消息角色中文标签（LingDtDecisionClient 组装 state.history 同口径复用）。 */
+    static String label(ChatMessage m) {
         if (m instanceof ChatMessage.User) return "用户";
         if (m instanceof ChatMessage.Ai) return "助手";
         if (m instanceof ChatMessage.System) return "系统";

@@ -30,7 +30,7 @@ import java.util.List;
  * （§5.3 Nacos 配置关键词表/冲突阈值/注入模式/置信度阈值/路由规则——随 NacosModelConfigSource 接入）。
  */
 @Configuration
-@EnableConfigurationProperties(IntentKeywordProperties.class)
+@EnableConfigurationProperties({IntentKeywordProperties.class, LingDtProperties.class})
 public class IntentConfig {
 
     private static final Logger log = LoggerFactory.getLogger(IntentConfig.class);
@@ -123,8 +123,56 @@ public class IntentConfig {
     }
 
     @Bean
-    IntentRecognizer intentRecognizer(RuleMatcher ruleMatcher, ChatLlmService llm) {
-        return new IntentRecognizerImpl(ruleMatcher, llm);
+    IntentRecognizer intentRecognizer(RuleMatcher ruleMatcher, ChatLlmService llm,
+                                      org.springframework.beans.factory.ObjectProvider<LingDtDecisionClient> lingDt) {
+        // ObjectProvider：lingdt.enabled=false（默认）时 client bean 不存在 → null 注入，走原通用小模型通道
+        return new IntentRecognizerImpl(ruleMatcher, llm, lingDt.getIfAvailable());
+    }
+
+    /**
+     * LingDT-Decision 决策型大模型 client（2026-10-24 接入，{@code lingdt.enabled=true} 才装配）：
+     * 专用 RestTemplate（超时预算 + OTel CLIENT span 拦截器，对齐 chroma/embedding 装配口径）+
+     * 内建熔断守卫（单次失败开断快速回退通用小模型，冷却后半开探测自动切回）。
+     */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "lingdt.enabled", havingValue = "true")
+    LingDtDecisionClient lingDtDecisionClient(LingDtProperties props, AgentMetrics metrics,
+                                              org.springframework.beans.factory.ObjectProvider<com.agentdemo007.observability.AgentTracer> tracer,
+                                              org.springframework.beans.factory.ObjectProvider<io.opentelemetry.api.OpenTelemetry> openTelemetry,
+                                              org.springframework.beans.factory.ObjectProvider<tools.jackson.databind.ObjectMapper> objectMapper) {
+        requireConfigured(props);
+        org.springframework.web.client.RestTemplate rt = LingDtDecisionClient.restTemplate(props);
+        // Phase 23 同款：Boot 4 无 RestTemplateBuilder，手写拦截器收口 CLIENT span + W3C 注入；
+        // ObjectProvider 缺省降级（迷你上下文无 OTel bean 时退 no-op，不炸装配）
+        rt.getInterceptors().add(new com.agentdemo007.observability.trace.TraceClientInterceptor(
+                tracer.getIfAvailable(() -> com.agentdemo007.observability.AgentTracer.NO_OP),
+                openTelemetry.getIfAvailable(io.opentelemetry.api.OpenTelemetry::noop)));
+        log.info("LingDT-Decision 决策型大模型已启用（意图识别优先通道，不可用自动回退通用小模型）："
+                + "model={} endpoint={}", props.getModel(), props.getEndpoint());
+        return new LingDtDecisionClient(props, rt,
+                objectMapper.getIfAvailable(() -> tools.jackson.databind.json.JsonMapper.builder().build()), metrics);
+    }
+
+    /**
+     * 启用即校验三要素非空（fail-fast 拒绝启动，2026-10-24 review 收口）：带病运行的表现是
+     * 每轮意图识别静默回退通用小模型——「功能上线了但没上线」（第十四章 §3 的教训），必须把
+     * 配置缺失挡在启动期而不是运行期。
+     */
+    private static void requireConfigured(LingDtProperties props) {
+        List<String> missing = new ArrayList<>();
+        if (props.getEndpoint() == null || props.getEndpoint().isBlank()) {
+            missing.add("lingdt.endpoint（LINGDT_ENDPOINT）");
+        }
+        if (props.getModel() == null || props.getModel().isBlank()) {
+            missing.add("lingdt.model（LINGDT_MODEL）");
+        }
+        if (props.getApiKey() == null || props.getApiKey().isBlank()) {
+            missing.add("lingdt.api-key（LINGDT_API_KEY）");
+        }
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException("lingdt.enabled=true 但缺少必填配置：" + missing
+                    + "——请补齐 Nacos dataId 或环境变量后重启，拒绝带病启动");
+        }
     }
 
     @Bean

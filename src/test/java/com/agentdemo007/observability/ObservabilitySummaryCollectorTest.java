@@ -8,6 +8,7 @@ import com.agentdemo007.gateway.config.ModelConfigCenter;
 import com.agentdemo007.gateway.config.ModelMetadata;
 import com.agentdemo007.gateway.config.ModelMetadata.ModelStatus;
 import com.agentdemo007.gateway.registry.ModelRegistry;
+import com.agentdemo007.intent.LingDtProperties;
 import com.agentdemo007.persistence.repository.ChatTurnRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -34,8 +35,9 @@ class ObservabilitySummaryCollectorTest {
     private final ModelConfigCenter configCenter = new ModelConfigCenter(() -> null, modelRegistry);
     private final HumanTicketService ticketService = new HumanTicketService();
     private final ChatTurnRepository turnRepository = mock(ChatTurnRepository.class);
+    private final LingDtProperties lingDt = new LingDtProperties();
     private final ObservabilitySummaryCollector collector =
-            new ObservabilitySummaryCollector(meterRegistry, configCenter, ticketService, turnRepository);
+            new ObservabilitySummaryCollector(meterRegistry, configCenter, ticketService, turnRepository, lingDt);
 
     @Test
     void summary_reflectsLiveCountersAndStructuralCounts() {
@@ -74,6 +76,31 @@ class ObservabilitySummaryCollectorTest {
         assertThat(s.hitlPendingTickets()).isEqualTo(1);
         assertThat(s.totalTurns()).isEqualTo(10);
         assertThat(s.degradedTurns()).isEqualTo(3);
+    }
+
+    @Test
+    void summary_lingDtEnabled_countsDecisionChannelAsModel() {
+        // 2026-10-24 补录：/obs 台「模型 x/y」计入决策通道（不在网关注册表，但在跑）
+        modelRegistry.register(ModelMetadata.builder("m1").weight(1).build());
+        lingDt.setEnabled(true);
+
+        ObservabilitySummary s = collector.summary();
+
+        assertThat(s.modelCount()).isEqualTo(2);  // 注册表 1 + 决策通道 1
+        assertThat(s.modelEnabled()).isEqualTo(2);
+    }
+
+    @Test
+    void summary_lingDtIdCollision_noDoubleCount() {
+        // 撞名防护（2026-10-24 review 收口）：注册表已有与 lingdt.model 同 id 的真实模型 → 不再 +1
+        lingDt.setEnabled(true);
+        lingDt.setModel("m1");
+        modelRegistry.register(ModelMetadata.builder("m1").weight(1).build());
+
+        ObservabilitySummary s = collector.summary();
+
+        assertThat(s.modelCount()).isEqualTo(1);
+        assertThat(s.modelEnabled()).isEqualTo(1);
     }
 
     @Test

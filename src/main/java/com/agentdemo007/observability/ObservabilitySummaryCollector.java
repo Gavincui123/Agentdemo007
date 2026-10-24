@@ -2,6 +2,7 @@ package com.agentdemo007.observability;
 
 import com.agentdemo007.capability.hitl.HumanTicketService;
 import com.agentdemo007.gateway.config.ModelConfigCenter;
+import com.agentdemo007.intent.LingDtProperties;
 import com.agentdemo007.persistence.repository.ChatTurnRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -44,15 +45,18 @@ public class ObservabilitySummaryCollector {
     private final ModelConfigCenter configCenter;
     private final HumanTicketService ticketService;
     private final ChatTurnRepository turnRepository;
+    private final LingDtProperties lingDt;
 
     public ObservabilitySummaryCollector(MeterRegistry meterRegistry,
                                          ModelConfigCenter configCenter,
                                          HumanTicketService ticketService,
-                                         ChatTurnRepository turnRepository) {
+                                         ChatTurnRepository turnRepository,
+                                         LingDtProperties lingDt) {
         this.meterRegistry = meterRegistry;
         this.configCenter = configCenter;
         this.ticketService = ticketService;
         this.turnRepository = turnRepository;
+        this.lingDt = lingDt;
     }
 
     /**
@@ -75,12 +79,26 @@ public class ObservabilitySummaryCollector {
                 tagged(AgentMetrics.TOOL, AgentMetrics.SUCCESS_TAG, AgentMetrics.FALSE),
                 tagged(AgentMetrics.HITL, AgentMetrics.TRIGGERED_TAG, AgentMetrics.TRUE),
                 tagged(AgentMetrics.FAILOVER, AgentMetrics.OUTCOME_TAG, "exhausted"),
-                (int) safeRead("模型注册中心", () -> configCenter.registry().all().size()),
-                (int) safeRead("模型注册中心", () -> configCenter.registry().enabled().size()),
+                // 意图决策通道（lingdt.enabled）计入模型总数/启用数——它不在网关注册表里
+                // （专有决策 API 非 OpenAI 兼容），但 /obs 台「模型 x/y」应反映这条在跑的通道；
+                // 注册表已有同名 id 时不再 +1（与 AdminModelController 补录跳过同口径，防双计）
+                (int) safeRead("模型注册中心", () -> configCenter.registry().all().size())
+                        + (lingDtEnabledAndAbsent() ? 1 : 0),
+                (int) safeRead("模型注册中心", () -> configCenter.registry().enabled().size())
+                        + (lingDtEnabledAndAbsent() ? 1 : 0),
                 (int) safeRead("HITL 工单", () -> ticketService.pendingTickets().size()),
                 safeRead("轮次统计", () -> turnRepository.count()),
                 safeRead("轮次统计", () -> turnRepository.countByDegradedTrue())
         );
+    }
+
+    /** 决策通道计入条件：启用且注册表无同 id 模型（撞名时跳过 +1，与 AdminModelController 补录跳过同口径）。 */
+    private boolean lingDtEnabledAndAbsent() {
+        if (!lingDt.isEnabled()) {
+            return false;
+        }
+        String id = lingDt.getModel();
+        return id == null || configCenter.registry().all().stream().noneMatch(m -> id.equals(m.id()));
     }
 
     /** 结构性读数降级护栏：数据源异常→0 + WARN（部分源故障不拖垮整个快照）。 */
