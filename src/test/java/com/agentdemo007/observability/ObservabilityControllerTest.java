@@ -8,6 +8,7 @@ import com.agentdemo007.gateway.config.ModelConfigCenter;
 import com.agentdemo007.gateway.config.ModelMetadata;
 import com.agentdemo007.gateway.config.ModelMetadata.ModelStatus;
 import com.agentdemo007.gateway.registry.ModelRegistry;
+import com.agentdemo007.intent.LingDtProperties;
 import com.agentdemo007.persistence.repository.ChatTurnRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -36,7 +37,8 @@ class ObservabilityControllerTest {
     private final HumanTicketService ticketService = new HumanTicketService();
     private final ChatTurnRepository turnRepository = mock(ChatTurnRepository.class);
     private final ObservabilitySummaryCollector collector =
-            new ObservabilitySummaryCollector(meterRegistry, configCenter, ticketService, turnRepository);
+            new ObservabilitySummaryCollector(meterRegistry, configCenter, ticketService, turnRepository,
+                    new LingDtProperties());
     private final ObservabilityController controller = new ObservabilityController(collector);
     private final AgentMetrics metrics = new AgentMetrics(meterRegistry);
 

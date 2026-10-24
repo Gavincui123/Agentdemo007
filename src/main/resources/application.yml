@@ -182,6 +182,27 @@ llm:
     failure-threshold: ${LLM_CB_FAILURE_THRESHOLD:5}
     cooldown-ms: ${LLM_CB_COOLDOWN_MS:30000}
 
+# ---- 意图识别·决策型大模型 LingDT-Decision（2026-10-24 接入，蚂蚁数科 DTMaaS System One）----
+# 专有决策 API（非 OpenAI 兼容，不进 llm.providers）：POST {endpoint}，model 路由名在请求体顶层
+# （URL query 不认——实测网关报 missing_model；官方文档示例写的是 query，勿照抄），
+# 意图分类建模为 choice 决策（criteria=5 认知意图定义，单一真源 MODEL_CANDIDATES），
+# 返回 choice + confidence（真实置信度透传，替代通用通道写死 0.7）。
+# 仅意图识别 LLM 分类层使用；不可用（HTTP/超时/业务码/熔断开路）同轮自动回退通用小模型，
+# 熔断冷却后半开探测自动切回。enabled=false（默认）不装配 client，行为与接入前完全一致。
+# 接入段（endpoint/model 在 Nacos dataId 覆盖，密钥经 env 解析，对齐 llm.providers 惯例）：
+#   lingdt:
+#     enabled: true
+#     endpoint: https://<MAAS_GATEWAY>/v1/systemone   # 服务域名（含 /v1/systemone 路径）
+#     model: <已授权的模型路由名>                       # 如 lingdt-decision-1.0-27b（4B/27B 路由名不同）
+#     api-key: ${LINGDT_API_KEY}
+lingdt:
+  enabled: ${LINGDT_ENABLED:false}
+  endpoint: ${LINGDT_ENDPOINT:}
+  model: ${LINGDT_MODEL:}
+  api-key: ${LINGDT_API_KEY:}
+  connect-timeout-ms: ${LINGDT_CONNECT_TIMEOUT_MS:5000}
+  read-timeout-ms: ${LINGDT_READ_TIMEOUT_MS:15000}
+
 # ---- 关键词前置分诊（intent.keywords，Phase 7·第一层关键词识别）----
 # KeywordTriageStep(@Order 150，流水线第一步) 对 rawInput 跑规则匹配：
 #   命中 CHIT_CHAT/REASONING 等且置信达标 → 设 intent（下游改写/重识别跳过，零 LLM）；

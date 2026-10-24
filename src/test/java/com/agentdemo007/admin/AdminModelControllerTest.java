@@ -5,6 +5,7 @@ import com.agentdemo007.gateway.config.ModelConfigCenter;
 import com.agentdemo007.gateway.config.ModelMetadata;
 import com.agentdemo007.gateway.config.ModelMetadata.ModelStatus;
 import com.agentdemo007.gateway.registry.ModelRegistry;
+import com.agentdemo007.intent.LingDtProperties;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
@@ -26,7 +27,8 @@ class AdminModelControllerTest {
 
     private final ModelRegistry registry = new ModelRegistry();
     private final ModelConfigCenter configCenter = new ModelConfigCenter(() -> null, registry);
-    private final AdminModelController controller = new AdminModelController(configCenter);
+    private final LingDtProperties lingDt = new LingDtProperties();
+    private final AdminModelController controller = new AdminModelController(configCenter, lingDt);
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
@@ -74,6 +76,38 @@ class AdminModelControllerTest {
 
         assertThat(data).hasSize(1);
         assertThat(data.get(0).weight()).isEqualTo(9);
+    }
+
+    @Test
+    void models_lingDtEnabled_appendsDecisionChannelEntry() {
+        // 2026-10-24 补录：决策通道不进网关注册表（非 OpenAI 兼容，路由不可选），但权重页可见
+        lingDt.setEnabled(true);
+        lingDt.setModel("lingdt-decision-1.0");
+        lingDt.setEndpoint("https://maas-api.antdigital.com/v1/systemone");
+        registry.register(ModelMetadata.builder("m1").weight(5).build());
+
+        List<ModelSummary> data = asList(controller.models());
+
+        assertThat(data).hasSize(2);
+        ModelSummary lingdt = data.get(1); // 追加在注册表之后
+        assertThat(lingdt.id()).isEqualTo("lingdt-decision-1.0");
+        assertThat(lingdt.provider()).isEqualTo("antdigital-dtmaas");
+        assertThat(lingdt.enabled()).isTrue();
+        assertThat(lingdt.weight()).isZero(); // 不参与权重路由
+        assertThat(lingdt.tags()).contains("意图识别·决策专用", "不可用回退通用小模型");
+    }
+
+    @Test
+    void models_lingDtEnabled_registryCollision_skipsSyntheticEntry() {
+        // 撞名防护（2026-10-24 review 收口）：注册表已有同 id 模型 → 跳过补录，防重复行与调权归属歧义
+        lingDt.setEnabled(true);
+        lingDt.setModel("m1");
+        registry.register(ModelMetadata.builder("m1").weight(5).build());
+
+        List<ModelSummary> data = asList(controller.models());
+
+        assertThat(data).hasSize(1);
+        assertThat(data.get(0).id()).isEqualTo("m1");
     }
 
     @Test

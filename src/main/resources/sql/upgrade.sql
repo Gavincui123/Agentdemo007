@@ -1,0 +1,21 @@
+-- =============================================================================
+-- 存量库升级脚本（手工执行）——与 schema.sql 配套的结构演进真源之二
+--
+-- 背景：schema.sql 用 CREATE TABLE IF NOT EXISTS 幂等建表，但对已存在的表【永不改列】。
+-- 实体加列后，由旧版本建表的存量库会缺列——对应端点首次执行即
+-- Unknown column 'xxx' in 'field list' → 统一响应 code 5000（2026-10-23 生产 KB
+-- 台账 GET /admin/kb/documents 500 实测命中）。
+--
+-- 执行方式：mysql -h <host> -u <user> -p <库名> < upgrade.sql
+-- 幂等性：MySQL 不支持 ADD COLUMN IF NOT EXISTS，重复执行报 Duplicate column
+--         （可忽略）；不确定列是否已加先查：
+--         SHOW COLUMNS FROM kb_document LIKE 'required_level';
+-- 新装环境无需本脚本：schema.sql 建表 DDL 已含全部列。
+--
+-- 维护纪律：此后实体加列/改列时，schema.sql 的建表 DDL（新装环境）与本文件
+-- 追加一节 ALTER（存量环境）两处同步，按日期倒序追加在文件顶部。
+-- =============================================================================
+
+-- 2026-10-23：kb_document.required_level
+-- Phase 21 客户等级可见性（提交 4b2e7d7 加列）；存量行 DEFAULT 0 = V0 公开口径，平滑升级。
+ALTER TABLE kb_document ADD COLUMN required_level TINYINT NOT NULL DEFAULT 0;

@@ -128,7 +128,8 @@ CREATE TABLE IF NOT EXISTS kb_document (
     -- 客户等级可见性（Phase 21 安全轴·权限主载体）：V0 公开~V5 全量，检索谓词 =
     -- 主体等级 >= required_level（allowed_principals 命中例外优先）。DEFAULT 0 使存量行
     -- 平滑升级=V0 公开口径（既有检索行为零回归）。
-    -- 存量库补列（CREATE IF NOT EXISTS 不会改表）：ALTER TABLE kb_document ADD COLUMN required_level TINYINT NOT NULL DEFAULT 0;
+    -- 存量库补列见同目录 upgrade.sql（CREATE IF NOT EXISTS 不会改表；实体加列时两处同步：
+    -- 本建表 DDL + upgrade.sql 追加 ALTER，存量环境手工执行）。
     required_level     TINYINT       NOT NULL DEFAULT 0,
     title              VARCHAR(256)  NOT NULL,
     file_name          VARCHAR(256),

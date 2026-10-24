@@ -186,6 +186,8 @@ curl -i -H "X-Admin-Token: $ADMIN_TOKEN" \
 |------|------|------|
 | `LLM_ENABLED` | `false` | `true` → 按 `llm.providers`（Nacos dataId，结构见 6.5）装配路由执行器 + 模型级熔断 + 主备故障转移；false/缺省 → dev Noop 占位（下游收口 MODEL_DOWN 话术短路） |
 | `SF_KEY` / `ALIYUN_KEY` | — | dataId 里 `${SF_KEY}` / `${ALIYUN_KEY}` 占位的实参——放服务器环境变量，明文不落 Nacos/仓库 |
+| `LINGDT_ENABLED` | `false` | `true` → 意图识别优先走决策型大模型 LingDT-Decision（接入段 `lingdt:` 在 dataId，见 6.5）；不可用自动回退通用小模型 |
+| `LINGDT_API_KEY` | — | dataId 里 `${LINGDT_API_KEY}` 占位的实参（LingDT 密钥，同 SF_KEY 惯例） |
 
 ### 5.7 鉴权令牌
 
@@ -271,7 +273,7 @@ dataId 固定 `Agentdemo007.yaml`、group 固定 `DEFAULT_GROUP`——都写在 
 `NACOS_SERVER_ADDR` / `NACOS_NAMESPACE` / `NACOS_USERNAME` / `NACOS_PASSWORD`（服务器 Nacos 开鉴权才需后两个）
 
 - dataId 与 group 已在 import URL 固定，无对应环境变量（`NACOS_GROUP` 仅作组件默认 group，对本项目被 URL 钉死的 dataId 不生效）
-- **密钥不落 Nacos**：dataId 里写 `${SF_KEY}` / `${ALIYUN_KEY}` 占位，值放服务器环境变量，运行期由 Spring 占位符解析
+- **密钥不落 Nacos**：dataId 里写 `${SF_KEY}` / `${ALIYUN_KEY}` / `${LINGDT_API_KEY}` 占位，值放服务器环境变量，运行期由 Spring 占位符解析
 - 同名键 **env 变量赢**（见 6.1 优先级）——临时覆盖某配置不必改 dataId，导出同名环境变量即可
 
 ### 6.5 完整 dataId 示例（可直接粘贴）
@@ -326,6 +328,16 @@ llm:
       small-model: deepseek-v4-pro-0813
       disable-thinking-params:
         enable_thinking: false
+
+# ---- 意图识别·决策型大模型 LingDT-Decision（2026-10-24 接入；专有决策 API 不进 llm.providers）----
+# 仅意图识别 LLM 分类层使用（choice 决策 + 真实 confidence）；不可用同轮自动回退通用小模型，
+# 熔断冷却后半开探测自动切回。endpoint/model 两要素在此配置，密钥经 ${LINGDT_API_KEY} 占位
+# 由服务器环境变量解析（对齐 SF_KEY 惯例，明文不落 Nacos）。
+lingdt:
+  enabled: true
+  endpoint: https://<MAAS_GATEWAY>/v1/systemone   # 服务域名（含 /v1/systemone 路径）
+  model: <已授权的模型路由名>                       # 如 lingdt-decision-1.0-27b（4B/27B 路由名不同）
+  api-key: ${LINGDT_API_KEY}
 
 # ---- 真实 RAG·稠密嵌入（模型必须与 Python 入库一致，否则向量空间错位）----
 embedding:
@@ -515,6 +527,8 @@ prod 由 `classpath:schema.sql`（`src/main/resources/schema.sql`）建表，`ap
 
 > 项目未集成 Flyway/Liquibase。结构演进时：改 `schema.sql`（加 `IF NOT EXISTS` 幂等语句；勿加 `ALTER`/`INSERT` 这类非幂等语句），或手动 DBA 执行迁移。引入迁移工具后此节作废。
 >
+> **存量表补列（2026-10-23 定案：SQL 脚本手工执行，不做运行时自动补列）**：`CREATE TABLE IF NOT EXISTS` 对已存在的表**永不改列**——实体加列后，由旧版本建的生产表会缺列，对应端点首查即 `Unknown column` → 统一 5000（2026-10-23 生产 KB 台账实测命中，traceId ef1bbeb2…）。**加列时的双写纪律**：改 `schema.sql` 建表 DDL（新装环境）+ `sql/upgrade.sql` 顶部追加一节 ALTER（存量环境手工执行）。当前 upgrade.sql 含 `kb_document.required_level` 补列（2026-10-23 事故修复）。
+>
 > **推荐索引**（脚本注释列出，未纳入 always 幂等脚本，因 MySQL 不支持 `CREATE INDEX IF NOT EXISTS`）：`chat_turn(session_id, turn_timestamp)`、`audit_event(trace_id)`、`audit_event(created_at)`、`hitl_ticket(idempotency_key)`、`hitl_ticket(status)`、`hitl_checkpoint(idempotency_key)`。首次建表后手动执行。
 
 ### 8.1 HITL L2 挂起-恢复：三表 DDL + mock 数据（用户自建）
@@ -574,6 +588,7 @@ prod 由 `classpath:schema.sql`（`src/main/resources/schema.sql`）建表，`ap
 | jar 体积随构建递增 | 非 `clean` 打包累积死 chunk → 一律 `mvn clean package`（4.3） |
 | `ObservabilityView` chunk ~1 MB | 全量 ECharts 打入该懒加载块，仅 `/#/obs` 按需加载；后续可改 ECharts 按需 import 瘦身 |
 | prod 启动报表不存在 | `schema.sql` 未执行 → 确认 `spring.sql.init.mode=always`（prod 默认已设）；首次建表见第 8 节 |
+| KB 台账/录入 500（日志 `Unknown column 'xxx' in 'field list'`） | 存量表缺列（旧版本建表 + 实体后加列）：手工执行 `src/main/resources/sql/upgrade.sql` 中对应 ALTER（如 `ALTER TABLE kb_document ADD COLUMN required_level TINYINT NOT NULL DEFAULT 0;`，2026-10-23 事故），执行后无需重启 |
 | 对话返回话术而非回复 | `LLM_ENABLED` 未开或 dataId `llm.providers` 未配 → LLM 降级；配置后恢复 |
 | 管理台 401 | `ADMIN_TOKEN` 不匹配 → `/#/auth` 录入正确令牌 |
 | dev 不连 RabbitMQ 正常 | `RABBITMQ_ENABLED` 默认 false，NoopMessagePublisher，会话/审计仅记 log |

@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -168,5 +169,66 @@ class IntentRecognizerImplTest {
         assertThat(prompt.getValue()).doesNotContain("INJECTION"); // 注入同样规则层独占
         // 提示词工程结构钉：任务原则 + 带定义候选 + few-shot 示例 + 输出格式（防后续被改空回归单句提示词）
         assertThat(prompt.getValue()).contains("分类原则").contains("候选意图").contains("示例").contains("输出格式");
+    }
+
+    // ---- 2026-10-24 LingDT-Decision 决策型大模型优先通道（不可用同轮自动回退通用小模型）----
+
+    private final LingDtDecisionClient lingDt = mock(LingDtDecisionClient.class);
+
+    /** 带 LingDT 通道的识别器（规则层仅注入模式，保证走到模型层）。 */
+    private IntentRecognizerImpl recognizerWithLingDt() {
+        return new IntentRecognizerImpl(
+                new RuleMatcher(List.of(new InjectionPatternRule(INJECTION_PATTERNS))), llm, lingDt);
+    }
+
+    @Test
+    void lingDtSucceeds_usesRealConfidence_skipsGenericModel() {
+        when(lingDt.classify(anyString(), any()))
+                .thenReturn(new LingDtDecisionClient.Decision(Intent.REASONING, 0.93));
+
+        IntentCategory c = recognizerWithLingDt().recognize("2加3乘4等于多少", List.of());
+
+        assertThat(c.intent()).isEqualTo(Intent.REASONING);
+        assertThat(c.confidence()).isEqualTo(0.93); // 真实置信度透传（替代通用通道写死 0.7）
+        verify(llm, never()).decide(anyString(), anyString()); // 决策通道成功，通用小模型零调用
+    }
+
+    @Test
+    void lingDtUnavailable_sameTurnFallsBackToGenericModel() {
+        // 兼容核心（用户裁决）：LingDT 不可用（HTTP/超时/业务码/熔断开路任何形态）→ 同轮回退通用小模型
+        when(lingDt.classify(anyString(), any()))
+                .thenThrow(new IllegalStateException("LingDT 熔断开启中"));
+        when(llm.decide(anyString(), anyString())).thenReturn("REASONING");
+
+        IntentCategory c = recognizerWithLingDt().recognize("2加3乘4等于多少", List.of());
+
+        assertThat(c.intent()).isEqualTo(Intent.REASONING); // 回退通道完成本次分类，用户无感知
+        assertThat(c.confidence()).isEqualTo(0.7); // 回退口径维持原 MODEL_CONFIDENCE
+        verify(llm).decide(anyString(), eq("意图识别"));
+    }
+
+    @Test
+    void lingDtAndGenericBothFail_fallsBackUnknown() {
+        when(lingDt.classify(anyString(), any()))
+                .thenThrow(new IllegalStateException("LingDT 连接失败/超时"));
+        when(llm.decide(anyString(), anyString())).thenThrow(new RuntimeException("model down"));
+
+        IntentCategory c = recognizerWithLingDt().recognize("随便聊聊", List.of());
+
+        assertThat(c).isEqualTo(IntentCategory.unknown()); // 两级都挂才兜底，韧性同接入前
+    }
+
+    @Test
+    void ruleLayerHits_lingDtNeverCalled() {
+        // 决策通道只接管「规则无定论」层：规则命中（含注入）仍零 LLM 出站（§5.11 不因新通道破例）
+        IntentRecognizerImpl r = new IntentRecognizerImpl(new RuleMatcher(List.of(
+                new KeywordRule("订单", Intent.REASONING, 0.9),
+                new InjectionPatternRule(INJECTION_PATTERNS))), llm, lingDt);
+
+        IntentCategory c = r.recognize("查订单状态", List.of());
+
+        assertThat(c.intent()).isEqualTo(Intent.REASONING);
+        org.mockito.Mockito.verifyNoInteractions(lingDt);
+        verify(llm, never()).decide(anyString(), anyString());
     }
 }
